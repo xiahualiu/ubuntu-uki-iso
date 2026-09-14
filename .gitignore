@@ -1,0 +1,37 @@
+# --- build products ---------------------------------------------------------
+# Nothing large is ever committed.
+*.deb
+*.iso
+*.squashfs
+*.img
+*.efi
+out/
+
+# Extracted kernel source (the build unpacks it under out/, but a stray
+# extraction in the tree should not be committable either).
+linux-source*/
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/lib/
+dist/
+.venv/
+venv/
+
+# --- tooling caches ---------------------------------------------------------
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- editors ----------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+
+# --- scratch ----------------------------------------------------------------
+*.log
+tmp/

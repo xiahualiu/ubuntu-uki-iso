@@ -1,0 +1,133 @@
+# Symbols the kernel trim must not remove
+# ======================================
+#
+# Read this before trimming the kernel.
+#
+# The failure mode this file exists for: a `# CONFIG_X is not set` line in
+# config-trim.fragment disables something this project depends on. The kernel
+# still builds. The box still boots. The array still mounts. Docker starts. And
+# then, much later and very far from the cause, `docker run` fails with
+# something like "failed to create task for container: ... operation not
+# permitted", which points at runc and cgroups and says nothing about a kernel
+# config.
+#
+# `ubuntu-uki-iso doctor` checks every symbol below against the merged .config after
+# the trim and REFUSES to build if one is missing. Getting it wrong costs a
+# failed build; not having this file costs an afternoon of debugging a kernel
+# that looks fine.
+#
+# The list is not only about Docker. Anything this project needs at runtime
+# belongs here, whatever the reason — see the test-harness section at the
+# bottom, which exists because a symbol was lost that nothing was guarding.
+#
+# Format — one symbol per line:
+#   CONFIG_FOO        must be set to y or m
+#   CONFIG_FOO=y      must be exactly y
+#   CONFIG_FOO=m      must be y or m
+#   # blank lines and # comments are ignored
+#
+# Beware menu gates. `CONFIG_SCSI_LOWLEVEL`, `CONFIG_NET_VENDOR_*` and
+# `CONFIG_WLAN` are `menuconfig` symbols: disabling one removes everything
+# inside its block, including symbols it never names. That is how SCSI_VIRTIO
+# was lost — nothing guarded it, nothing mentioned it, and the only symptom was
+# a test suite reporting a machine with no disks.
+#
+# Symbols are checked, not assumed: symbols that appear in the design notes for
+# this project but are not Kconfig symbols in 7.0 are omitted deliberately.
+# efivarfs is built unconditionally with CONFIG_EFI and has no symbol of its
+# own; dm-linear is part of BLK_DEV_DM. Listing either would make the check
+# pass or fail for the wrong reason. `ubuntu-uki-iso verify` re-validates this list.
+
+# --- Namespaces: the isolation runc builds every container out of -----------
+CONFIG_NAMESPACES=y
+CONFIG_NET_NS=y
+CONFIG_PID_NS=y
+CONFIG_IPC_NS=y
+CONFIG_UTS_NS=y
+CONFIG_USER_NS=y
+
+# --- Control groups: resource limits, and the freezer docker stop uses ------
+CONFIG_CGROUPS=y
+CONFIG_MEMCG=y
+CONFIG_CGROUP_BPF=y
+CONFIG_CGROUP_PIDS=y
+CONFIG_CGROUP_FREEZER=y
+
+# --- Netfilter: docker's port publishing and network create ----------------
+# `docker run --rm hello-world` does not exercise these. `docker network
+# create` does. That is why the verification table tests both.
+CONFIG_NETFILTER=y
+CONFIG_NF_CONNTRACK
+CONFIG_NF_NAT
+CONFIG_NF_TABLES
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE
+CONFIG_NETFILTER_XT_MATCH_CONNTRACK
+CONFIG_NETFILTER_XT_MATCH_IPVS
+
+# --- Bridge and overlay networking for the default bridge driver -----------
+CONFIG_BRIDGE
+CONFIG_BRIDGE_NETFILTER
+CONFIG_VETH
+CONFIG_VXLAN
+
+# --- The container filesystem and the syscall surface ----------------------
+# OVERLAY_FS is what the overlayfs storage driver needs, and it is also what
+# dmsquash-live uses for the live ISO's writable layer.
+CONFIG_OVERLAY_FS
+CONFIG_KEYS=y
+CONFIG_SECCOMP=y
+CONFIG_SECCOMP_FILTER=y
+CONFIG_POSIX_MQUEUE=y
+CONFIG_BPF_SYSCALL=y
+
+# --- Storage this machine actually uses ------------------------------------
+# Guarded for the same reason as everything else: the trim disables a great
+# many drivers, and "the disk driver" is not a thing anyone expects to lose.
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+CONFIG_SATA_AHCI
+CONFIG_BLK_DEV_NVME
+CONFIG_MD=y
+CONFIG_BLK_DEV_MD=y
+CONFIG_MD_RAID0
+CONFIG_EXT4_FS=y
+CONFIG_VFAT_FS=y
+
+# --- What the live medium arrives on, and what the array is on -------------
+# Not Docker, but exactly the same failure shape: disabling one of these builds
+# a perfectly good kernel that then cannot boot its own installation medium, or
+# whose test suite reports a machine with no disks.
+#
+# This section exists because of a real one. CONFIG_SCSI_VIRTIO lived inside
+# the `if SCSI_LOWLEVEL` menu block in drivers/scsi/Kconfig, so a single line
+# disabling SCSI_LOWLEVEL removed it — without naming it, and while a comment a
+# few lines away claimed it was being kept. Nothing guarded it, because this
+# list was framed as "Docker-critical" and virtio-scsi is not a Docker concern.
+# The only symptom would have been a test suite reporting no disks.
+#
+# The harness no longer uses virtio-scsi — its data disks are on AHCI, like the
+# machine's — so those entries are gone. What replaced them is the stack the
+# live ISO actually boots through: the ISO is written to a USB stick, so the
+# media is read by usb-storage into the SCSI disk driver, not by a CD-ROM
+# driver off an ATAPI bus.
+
+# USB mass storage, and the controllers underneath it. Without these the live
+# environment cannot see the stick it booted from, which dracut discovers late
+# and reports as a rescue shell.
+CONFIG_USB_STORAGE
+CONFIG_USB_XHCI_HCD
+CONFIG_USB_EHCI_HCD
+
+# The USB stick is a SCSI disk as far as the kernel is concerned.
+CONFIG_SCSI=y
+CONFIG_BLK_DEV_SD=y
+
+# The live medium's filesystem, and the overlay dracut puts on top of it.
+CONFIG_ISO9660_FS
+CONFIG_SQUASHFS=y
+CONFIG_BLK_DEV_LOOP
+
+# SATA and NVMe: the eight data disks and the root disk.
+CONFIG_ATA=y
+CONFIG_SATA_AHCI
+CONFIG_BLK_DEV_NVME

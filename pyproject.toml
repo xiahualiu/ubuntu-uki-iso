@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ubuntu-uki-iso"
+version = "0.1.0"
+description = "Reproducible Ubuntu image with a custom kernel, delivered as a UKI the firmware boots directly"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "ubuntu-uki-iso" }]
+keywords = ["uki", "uefi", "kernel", "dracut", "mmdebstrap", "iso"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: System :: Systems Administration",
+]
+
+# No runtime dependencies, deliberately.
+#
+# This code runs in three places with very different appetites for surprise:
+# the build container, the live ISO, and the installed system's kernel-install
+# path. A third-party dependency in any of them is something that can be
+# missing, at the worst moment, on a machine whose boot depends on it. The
+# standard library is the only thing guaranteed to be there.
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov",
+  "ruff",
+  "mypy",
+]
+
+[project.scripts]
+ubuntu-uki-iso = "ubuntu_uki_iso.cli:main"
+
+[project.urls]
+Documentation = "https://github.com/ubuntu-uki-iso/ubuntu-uki-iso#readme"
+
+[tool.setuptools]
+include-package-data = true
+
+# Flat layout: the package sits at the repository root. `include` is explicit
+# because with `where = ["."]` setuptools would otherwise also consider
+# `tests/` and `build/` — neither is a package, but namespace-package discovery
+# does not know that and would ship them.
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ubuntu_uki_iso*"]
+
+# The config data is not code — Kconfig fragments, package lists, cmdline
+# templates and dracut configuration are files a person reads and edits, and
+# they stay files. This is what puts them in the wheel so `pip install` on
+# another machine produces something that can actually build.
+[tool.setuptools.package-data]
+ubuntu_uki_iso = ["data/*/*", "data/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# `tests` is on the path so the binary-structure builders in tests/helpers.py
+# can be imported by name from the test modules that use them.
+pythonpath = [".", "tests"]
+addopts = "-q --strict-markers"
+markers = [
+  "slow: tests that need the network or a container",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = [".", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "C4", "RUF"]
+ignore = [
+  "E501",   # line length is handled by the formatter
+  "SIM108", # ternaries are not always clearer
+  # N818 wants exceptions to end in "Error". These are named for what they
+  # mean instead, and the names carry weight: `Refusal` is not an error — it is
+  # the safety design working, and it exits 2 rather than 1 precisely so that
+  # nothing upstream treats it as a failure. Renaming it `RefusalError` would
+  # make the codebase read as though stopping were a malfunction.
+  "N818",
+]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+no_implicit_optional = true

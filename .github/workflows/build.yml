@@ -1,0 +1,230 @@
+name: build
+
+# Runs on a self-hosted runner on ubuntu-uki-iso itself. That is a deliberate choice
+# with a security consequence worth stating plainly: a runner on this box
+# executes repo workflows in a container that can see the host's 58 TB array.
+#
+#   - Keep this repository private, or restrict who can open a PR against it.
+#   - The jobs below are gated so that untrusted events cannot reach the
+#     self-hosted runner. pull_request runs lint only, and it runs on a
+#     GitHub-hosted runner, so no fork can execute anything on this machine.
+#   - The build container mounts only the workspace and never /dev, so a
+#     compromised build script still cannot reach /dev/sd{a..h}.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ubuntu_uki_iso/**'
+      - 'tests/**'
+      - 'build/**'
+      - 'pyproject.toml'
+      - '.github/workflows/build.yml'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      debug_info:
+        description: 'Build the kernel with debug info (slow, ~45 min)'
+        type: boolean
+        default: true
+      run_vm_tests:
+        description: 'Run the QEMU tests after building the ISO'
+        type: boolean
+        default: false
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  # Keeps the squashfs and ISO timestamps deterministic where the tools allow.
+  SOURCE_DATE_EPOCH: '1700000000'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # lint — runs anywhere, on every event including forks.
+  # ---------------------------------------------------------------------------
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: install
+        run: pip install -e '.[dev]'
+      - name: lint
+        run: |
+          ruff check ubuntu-uki-iso tests
+          ruff format --check ubuntu-uki-iso tests
+      - name: workflow syntax
+        run: |
+          python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/build.yml'))"
+      # The RAID decision table. Runs anywhere, needs no root and no disks —
+      # every device helper is stubbed, so it cannot reach a real device even
+      # when the logic under test is wrong.
+      - name: RAID decision table
+        run: ubuntu-uki-iso test unit
+
+  # ---------------------------------------------------------------------------
+  # check-config — the cheap half of a kernel build. Validates that the trim
+  # fragment names real symbols and that nothing on the never-disable list was
+  # disabled. Catches the failure that otherwise costs 45 minutes to discover.
+  # ---------------------------------------------------------------------------
+  check-config:
+    name: check kernel config
+    runs-on: [self-hosted, linux, x64]
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: pip install -e .
+      - name: validate trim and guard list
+        run: ubuntu-uki-iso doctor
+      - name: no guarded symbol is trimmed
+        run: ubuntu-uki-iso verify
+
+  # ---------------------------------------------------------------------------
+  # kernel — expensive, so it runs only when asked or when tagging.
+  # ---------------------------------------------------------------------------
+  kernel:
+    name: build kernel
+    runs-on: [self-hosted, linux, x64]
+    needs: [check-config]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'release'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install
+        run: pip install -e .
+
+      # The kernel build dominates the wall clock. Caching it keyed on the trim
+      # fragment means a change to a shell script or the ISO layout does not
+      # cost another 45 minutes.
+      - name: restore kernel artifacts
+        uses: actions/cache@v4
+        with:
+          path: out/kernel
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-${{ inputs.debug_info }}
+
+      - name: build
+        run: |
+          ubuntu-uki-iso build kernel ${{ inputs.debug_info == false && '--no-debug-info' || '' }}
+
+      - name: record the release
+        id: release
+        run: echo "release=$(cat out/kernel/release)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ steps.release.outputs.release }}
+          path: |
+            out/kernel/*.deb
+            out/kernel/release
+            out/kernel/config.diff
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # iso — the deliverable.
+  # ---------------------------------------------------------------------------
+  iso:
+    name: build iso
+    runs-on: [self-hosted, linux, x64]
+    needs: [check-config]
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install
+        run: pip install -e .
+
+      - name: restore kernel artifacts
+        uses: actions/cache@v4
+        with:
+          path: out/kernel
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-true
+
+      # `build iso` needs a kernel; if the cache missed, build one.
+      - name: kernel (cache miss)
+        run: test -s out/kernel/release && echo "kernel present" || ubuntu-uki-iso build kernel
+
+      - name: build the ISO
+        run: ubuntu-uki-iso build iso
+
+      - name: verify the boot chain
+        run: |
+          set -euo pipefail
+          # The volume label and the live cmdline must agree or the ISO boots
+          # to a rescue shell. build/iso.py checks this too; this is the CI copy
+          # of the assertion, so a regression cannot pass silently.
+          label=$(xorriso -indev out/ubuntu_uki_iso.iso -pvd_info 2>/dev/null \
+                  | sed -n 's/^Volume id *: *//p' | head -1)
+          echo "volume id: $label"
+          test "$label" = "UBUNTU-UKI-ISO"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ubuntu-uki-iso
+          path: out/ubuntu_uki_iso.iso
+          if-no-files-found: error
+
+      - name: release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/ubuntu_uki_iso.iso
+          generate_release_notes: true
+
+      # Outputs are written by root inside the build container. Leaving them
+      # root-owned would break the next run on this runner.
+      - name: reclaim ownership
+        if: always()
+        run: ubuntu-uki-iso fix-perms || true
+
+  # ---------------------------------------------------------------------------
+  # vm-tests — the QEMU proofs. Opt-in, because a full run with no KVM is slow.
+  # ---------------------------------------------------------------------------
+  vm-tests:
+    name: qemu tests
+    runs-on: [self-hosted, linux, x64]
+    needs: [iso]
+    if: github.event_name == 'workflow_dispatch' && inputs.run_vm_tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install
+        run: pip install -e .
+
+      - name: restore kernel artifacts
+        uses: actions/cache@v4
+        with:
+          path: out/kernel
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-true
+
+      - name: build the test container
+        run: |
+          docker build --target test -f build/Dockerfile -t ubuntu-uki-iso-test:latest .
+
+      - name: download the ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: ubuntu-uki-iso
+          path: out
+
+      - name: run
+        run: ubuntu-uki-iso test vm
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vm-test-logs
+          path: out/vm-logs/
+          if-no-files-found: ignore
+
+      - name: reclaim ownership
+        if: always()
+        run: ubuntu-uki-iso fix-perms || true

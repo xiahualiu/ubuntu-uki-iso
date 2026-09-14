@@ -1,0 +1,68 @@
+# Packages for the INSTALLED system — minimal server + Docker.
+#
+# This list is unsquashed onto the target disk by installer/30-rootfs.sh from
+# the payload squashfs on the ISO. It is deliberately lean: no GNOME, no snapd,
+# no display server. Everything here has to justify its place on the disk.
+#
+# The kernel is NOT listed. It arrives as the custom .deb built by
+# `make kernel`, installed into this rootfs at ISO build time.
+
+# --- init and core ---------------------------------------------------------
+systemd
+systemd-sysv
+udev
+dbus
+kmod
+locales
+tzdata
+
+# --- containers ------------------------------------------------------------
+# docker.io from the Ubuntu archive is 29.1.3 on resolute, which is within a
+# point release of what this box runs today. Taking it from the archive keeps
+# the build reproducible from a single mirror with no third-party keyring —
+# which matters more here than the version, because the whole premise of this
+# project is that the image can be rebuilt from source and come out the same.
+docker.io
+
+# --- storage ---------------------------------------------------------------
+mdadm
+e2fsprogs
+dosfstools
+util-linux
+smartmontools
+
+# --- kernel / initramfs tooling -------------------------------------------
+# Required on the installed system, not just at build time: kernel-install is
+# what regenerates the UKI when the kernel is upgraded, and without the EFI
+# stub it cannot produce one.
+dracut
+systemd-ukify
+systemd-boot-efi
+efibootmgr
+
+# --- GPU -------------------------------------------------------------------
+# DRM_NOUVEAU is built as a module and kept in the rootfs. Without firmware it
+# loads but cannot accelerate, which would make keeping it pointless.
+linux-firmware
+
+# --- interpreter -----------------------------------------------------------
+# The kernel-install plugins and the installer itself are Python. On the
+# installed system this is on the kernel-upgrade path, so it is a real
+# dependency rather than a convenience.
+python3-minimal
+
+# --- administration --------------------------------------------------------
+openssh-server
+sudo
+bash-completion
+less
+nano
+vim-tiny
+procps
+psmisc
+curl
+ca-certificates
+iproute2
+iputils-ping
+pciutils
+usbutils

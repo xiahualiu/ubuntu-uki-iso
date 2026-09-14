@@ -1,0 +1,300 @@
+# ubuntu-uki-iso kernel trim
+# =====================
+#
+# Applied on top of /boot/config-<ver>-generic by ubuntu_uki_iso.build.kernel, then
+# resolved with `make olddefconfig`. Disables drivers for hardware that is not
+# present on ubuntu-uki-iso.
+#
+# READ THIS BEFORE ADDING A LINE
+# ------------------------------
+# This fragment is the *only* thing allowed to remove things. Anything that
+# must survive goes in never-disable.list, which ubuntu_uki_iso.build.kernel checks
+# after the merge and fails the build over. Adding an `is not set` line here
+# for something on that list breaks the build loudly rather than silently
+# producing a kernel that cannot run containers, or whose test suite reports a
+# machine with no disks.
+#
+# The list is not only about Docker. If this project needs a driver at
+# runtime, for any reason, it belongs there.
+#
+# Symbol names below were taken from the real config-7.0.0-31-generic, not from
+# memory. A symbol that does not exist in the base config is a no-op that
+# merge_config.sh warns about but tolerates, so a typo here fails open: run
+# `ubuntu-uki-iso doctor` after editing.
+
+# ---------------------------------------------------------------------------
+# Build hygiene — not a driver trim, but these break the build or bloat it
+# ---------------------------------------------------------------------------
+
+# Namespace the uname release, e.g. 7.0.0-ubuntu-uki-iso. This is what the UKI
+# filename and the `uname -r` verification in the README key off.
+CONFIG_LOCALVERSION="-ubuntu-uki-iso"
+
+# The Ubuntu source tree references Canonical's module-signing certificates.
+# A standalone bindeb-pkg build has no access to that PKI, and the build fails
+# late (well after the expensive compile) if these point at absent files.
+# Empty means "sign with nothing", which is what an unsigned, Secure-Boot-off
+# image wants anyway.
+CONFIG_SYSTEM_TRUSTED_KEYS=""
+CONFIG_SYSTEM_REVOCATION_KEYS=""
+
+# ---------------------------------------------------------------------------
+# Wireless
+# ---------------------------------------------------------------------------
+# CONFIG_WLAN is the gate for the whole wireless stack: setting it off removes
+# every vendor driver beneath it. CFG80211/MAC80211 are separate symbols and
+# are not selected by it.
+
+# CONFIG_WLAN is not set
+# CONFIG_CFG80211 is not set
+# CONFIG_MAC80211 is not set
+# CONFIG_RFKILL is not set
+
+# ---------------------------------------------------------------------------
+# Bluetooth
+# ---------------------------------------------------------------------------
+# CONFIG_BT gates every BT_* sub-option.
+
+# CONFIG_BT is not set
+
+# ---------------------------------------------------------------------------
+# Sound
+# ---------------------------------------------------------------------------
+# CONFIG_SOUND gates the entire SND_* tree.
+
+# CONFIG_SOUND is not set
+
+# ---------------------------------------------------------------------------
+# Legacy buses and dead radio
+# ---------------------------------------------------------------------------
+
+# CONFIG_HAMRADIO is not set
+# CONFIG_ISDN is not set
+# CONFIG_MISDN is not set
+# CONFIG_PCCARD is not set
+# CONFIG_PCMCIA is not set
+
+# ---------------------------------------------------------------------------
+# Ethernet — keep Intel, drop everything else
+# ---------------------------------------------------------------------------
+# NET_VENDOR_* are menu gates; one line removes a whole vendor's driver set.
+# NET_VENDOR_INTEL is deliberately kept: igc (the I226-V) lives there, and
+# e1000/e1000e come along with it, which is what makes the QEMU test harness
+# work without a separate kernel.
+
+# CONFIG_NET_VENDOR_3COM is not set
+# CONFIG_NET_VENDOR_ADAPTEC is not set
+# CONFIG_NET_VENDOR_AGERE is not set
+# CONFIG_NET_VENDOR_ALACRITECH is not set
+# CONFIG_NET_VENDOR_ALTEON is not set
+# CONFIG_NET_VENDOR_AMAZON is not set
+# CONFIG_NET_VENDOR_AMD is not set
+# CONFIG_NET_VENDOR_AQUANTIA is not set
+# CONFIG_NET_VENDOR_ARC is not set
+# CONFIG_NET_VENDOR_ASIX is not set
+# CONFIG_NET_VENDOR_ATHEROS is not set
+# CONFIG_NET_VENDOR_BROADCOM is not set
+# CONFIG_NET_VENDOR_CADENCE is not set
+# CONFIG_NET_VENDOR_CAVIUM is not set
+# CONFIG_NET_VENDOR_CHELSIO is not set
+# CONFIG_NET_VENDOR_CISCO is not set
+# CONFIG_NET_VENDOR_CORTINA is not set
+# CONFIG_NET_VENDOR_DAVICOM is not set
+# CONFIG_NET_VENDOR_DEC is not set
+# CONFIG_NET_VENDOR_DLINK is not set
+# CONFIG_NET_VENDOR_EMULEX is not set
+# CONFIG_NET_VENDOR_ENGLEDER is not set
+# CONFIG_NET_VENDOR_EZCHIP is not set
+# CONFIG_NET_VENDOR_FUJITSU is not set
+# CONFIG_NET_VENDOR_FUNGIBLE is not set
+# CONFIG_NET_VENDOR_GOOGLE is not set
+# CONFIG_NET_VENDOR_HUAWEI is not set
+# CONFIG_NET_VENDOR_ADI is not set
+# CONFIG_NET_VENDOR_LITEX is not set
+# CONFIG_NET_VENDOR_MARVELL is not set
+# CONFIG_NET_VENDOR_MELLANOX is not set
+# CONFIG_NET_VENDOR_META is not set
+# CONFIG_NET_VENDOR_MICREL is not set
+# CONFIG_NET_VENDOR_MICROCHIP is not set
+# CONFIG_NET_VENDOR_MICROSEMI is not set
+# CONFIG_NET_VENDOR_MICROSOFT is not set
+# CONFIG_NET_VENDOR_MUCSE is not set
+# CONFIG_NET_VENDOR_MYRI is not set
+# CONFIG_NET_VENDOR_NI is not set
+# CONFIG_NET_VENDOR_NATSEMI is not set
+# CONFIG_NET_VENDOR_NETRONOME is not set
+# CONFIG_NET_VENDOR_8390 is not set
+# CONFIG_NET_VENDOR_NVIDIA is not set
+# CONFIG_NET_VENDOR_OKI is not set
+# CONFIG_NET_VENDOR_PACKET_ENGINES is not set
+# CONFIG_NET_VENDOR_PENSANDO is not set
+# CONFIG_NET_VENDOR_QLOGIC is not set
+# CONFIG_NET_VENDOR_BROCADE is not set
+# CONFIG_NET_VENDOR_QUALCOMM is not set
+# CONFIG_NET_VENDOR_RDC is not set
+# CONFIG_NET_VENDOR_REALTEK is not set
+# CONFIG_NET_VENDOR_RENESAS is not set
+# CONFIG_NET_VENDOR_ROCKER is not set
+# CONFIG_NET_VENDOR_SAMSUNG is not set
+# CONFIG_NET_VENDOR_SEEQ is not set
+# CONFIG_NET_VENDOR_SILAN is not set
+# CONFIG_NET_VENDOR_SIS is not set
+# CONFIG_NET_VENDOR_SOLARFLARE is not set
+# CONFIG_NET_VENDOR_SMSC is not set
+# CONFIG_NET_VENDOR_SOCIONEXT is not set
+# CONFIG_NET_VENDOR_STMICRO is not set
+# CONFIG_NET_VENDOR_SUN is not set
+# CONFIG_NET_VENDOR_SYNOPSYS is not set
+# CONFIG_NET_VENDOR_TEHUTI is not set
+# CONFIG_NET_VENDOR_TI is not set
+# CONFIG_NET_VENDOR_VERTEXCOM is not set
+# CONFIG_NET_VENDOR_VIA is not set
+# CONFIG_NET_VENDOR_WANGXUN is not set
+# CONFIG_NET_VENDOR_WIZNET is not set
+# CONFIG_NET_VENDOR_XILINX is not set
+# CONFIG_NET_VENDOR_XIRCOM is not set
+
+# ---------------------------------------------------------------------------
+# Parallel ATA — the array is SATA, which is AHCI, not PATA
+# ---------------------------------------------------------------------------
+# ATA_PIIX and ATA_GENERIC are kept: QEMU's default IDE controller is a PIIX,
+# and ATA_GENERIC is the catch-all that keeps an unknown controller bootable.
+# That is cheap insurance for the one machine we cannot predict — the VM.
+
+# CONFIG_PATA_ALI is not set
+# CONFIG_PATA_AMD is not set
+# CONFIG_PATA_ARTOP is not set
+# CONFIG_PATA_ATIIXP is not set
+# CONFIG_PATA_ATP867X is not set
+# CONFIG_PATA_CMD64X is not set
+# CONFIG_PATA_CYPRESS is not set
+# CONFIG_PATA_EFAR is not set
+# CONFIG_PATA_HPT366 is not set
+# CONFIG_PATA_HPT37X is not set
+# CONFIG_PATA_HPT3X2N is not set
+# CONFIG_PATA_HPT3X3 is not set
+# CONFIG_PATA_IT8213 is not set
+# CONFIG_PATA_IT821X is not set
+# CONFIG_PATA_JMICRON is not set
+# CONFIG_PATA_MARVELL is not set
+# CONFIG_PATA_NETCELL is not set
+# CONFIG_PATA_NINJA32 is not set
+# CONFIG_PATA_NS87415 is not set
+# CONFIG_PATA_OLDPIIX is not set
+# CONFIG_PATA_OPTIDMA is not set
+# CONFIG_PATA_PDC2027X is not set
+# CONFIG_PATA_PDC_OLD is not set
+# CONFIG_PATA_RADISYS is not set
+# CONFIG_PATA_RDC is not set
+# CONFIG_PATA_SCH is not set
+# CONFIG_PATA_SERVERWORKS is not set
+# CONFIG_PATA_SIL680 is not set
+# CONFIG_PATA_SIS is not set
+# CONFIG_PATA_TOSHIBA is not set
+# CONFIG_PATA_TRIFLEX is not set
+# CONFIG_PATA_VIA is not set
+# CONFIG_PATA_WINBOND is not set
+# CONFIG_PATA_CMD640_PCI is not set
+# CONFIG_PATA_MPIIX is not set
+# CONFIG_PATA_NS87410 is not set
+# CONFIG_PATA_OPTI is not set
+# CONFIG_PATA_PCMCIA is not set
+# CONFIG_PATA_RZ1000 is not set
+# CONFIG_PATA_PARPORT is not set
+# CONFIG_PATA_ACPI is not set
+# CONFIG_PATA_LEGACY is not set
+
+# ---------------------------------------------------------------------------
+# SCSI — the midlayer stays, the host bus adapters go
+# ---------------------------------------------------------------------------
+# The midlayer is load-bearing and cannot be removed: libata sits on top of it,
+# so `# CONFIG_SCSI is not set` would take the SATA array with it. What is
+# optional is the layer above — the HBA drivers themselves — and it is disabled
+# here as a block.
+#
+# This is a menu gate, and an earlier version of this file avoided it for
+# exactly that reason: disabling SCSI_LOWLEVEL removes everything inside its
+# block, including symbols it never names. That is how SCSI_VIRTIO was lost,
+# back when the QEMU harness needed it for its data disks. The harness puts
+# those on AHCI now, so nothing in here is used, and the gate is the honest way
+# to say so.
+#
+# What was checked to survive, by configuring both ways and diffing:
+#
+#   CONFIG_SCSI=y           the midlayer
+#   CONFIG_BLK_DEV_SD=y     SCSI disks — the USB stick the ISO boots from
+#   CONFIG_BLK_DEV_SR=y     SCSI CD-ROM — not the primary path any more, kept
+#                           because it costs nothing and leaves CD boot working
+#   CONFIG_ATA=y            libata, which is not inside this block
+#   CONFIG_SATA_AHCI=m      the eight data disks
+#   CONFIG_BLK_DEV_NVME=m   the root disk; NVMe is not SCSI at all
+#   CONFIG_MD_RAID0=m       the array
+#   CONFIG_USB_STORAGE=m    USB mass storage; the live medium arrives that way
+#
+# If one of those ever stops surviving, this gate has grown to cover more than
+# it used to and the list above is where to look.
+
+# CONFIG_SCSI_LOWLEVEL is not set
+
+# ---------------------------------------------------------------------------
+# DRM — nouveau only
+# ---------------------------------------------------------------------------
+# The GPU is a TU104 (RTX 2080) and the only DRM driver kept. Everything else
+# is a driver for a GPU that is not in this machine.
+#
+# DRM_SIMPLEDRM is deliberately NOT touched. It is not a hardware driver, it is
+# the generic framebuffer that hands the EFI framebuffer to the console, and
+# it is =y in the base config. Setting it off would cost the boot console
+# before nouveau loads — which is the entire window where boot messages are
+# visible, since nouveau is excluded from every initramfs.
+#
+# DRM_VIRTIO_GPU is off like the rest; tests/vm-test.sh drives QEMU over the
+# serial console rather than a virtual display. Re-enable it here if you want
+# to boot the ISO in a graphical VM.
+
+# CONFIG_DRM_AMDGPU is not set
+# CONFIG_DRM_AST is not set
+# CONFIG_DRM_GMA500 is not set
+# CONFIG_DRM_HYPERV is not set
+# CONFIG_DRM_I915 is not set
+# CONFIG_DRM_MGAG200 is not set
+# CONFIG_DRM_QXL is not set
+# CONFIG_DRM_RADEON is not set
+# CONFIG_DRM_BOCHS is not set
+# CONFIG_DRM_CIRRUS_QEMU is not set
+# CONFIG_DRM_GM12U320 is not set
+# CONFIG_DRM_PIXPAPER is not set
+# CONFIG_DRM_UDL is not set
+# CONFIG_DRM_VBOXVIDEO is not set
+# CONFIG_DRM_VGEM is not set
+# CONFIG_DRM_VIRTIO_GPU is not set
+# CONFIG_DRM_VKMS is not set
+# CONFIG_DRM_VMWGFX is not set
+# CONFIG_DRM_XE is not set
+# CONFIG_DRM_XEN is not set
+# CONFIG_DRM_XEN_FRONTEND is not set
+# CONFIG_DRM_APPLETBDRM is not set
+# CONFIG_DRM_GUD is not set
+# CONFIG_DRM_SSD130X is not set
+# CONFIG_DRM_PANEL is not set
+# CONFIG_DRM_ANALOGIX_ANX78XX is not set
+# CONFIG_DRM_ANALOGIX_DP is not set
+# CONFIG_DRM_I2C_NXP_TDA998X is not set
+# CONFIG_DRM_ACCEL is not set
+
+# ---------------------------------------------------------------------------
+# Filesystems not in use
+# ---------------------------------------------------------------------------
+# The root disk is ext4, the ESP is vfat, the array is ext4, and the ISO needs
+# iso9660 + squashfs + overlayfs. Cluster/network filesystems are not in use.
+#
+# reiserfs is not listed: it was removed from the kernel entirely, so there is
+# no symbol left to disable. `make check-config` reports lines like that, which
+# is how this note came to exist.
+
+# CONFIG_BTRFS_FS is not set
+# CONFIG_GFS2_FS is not set
+# CONFIG_OCFS2_FS is not set
+# CONFIG_JFS_FS is not set
+# CONFIG_NILFS2_FS is not set
+# CONFIG_F2FS_FS is not set

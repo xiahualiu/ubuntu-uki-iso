@@ -1,0 +1,1 @@
+root=live:CDLABEL=@@VOLID@@ rd.live.image rd.live.dir=/live rd.live.squashimg=filesystem.squashfs rd.live.overlay.overlayfs=1 rd.md=0 rd.luks=0 rd.lvm=0 console=tty0 console=ttyS0,115200n8

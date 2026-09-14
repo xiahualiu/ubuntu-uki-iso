@@ -1,0 +1,81 @@
+# Packages for the LIVE environment — the one the ISO boots into.
+#
+# This is the installer's operating system, not the installed system. It is
+# allowed to be comfortable: parted, an editor, a shell, mdadm. None of it
+# reaches the target disk; the target gets packages/installed.list unsquashed
+# onto it instead.
+#
+# Deliberately absent: snapd, any display server, linux-firmware (the live
+# environment talks to the serial console, not the GPU).
+
+# --- init and core ---------------------------------------------------------
+systemd
+systemd-sysv
+udev
+dbus
+kmod
+locales
+tzdata
+
+# --- kernel / initramfs tooling -------------------------------------------
+# dracut + ukify + the EFI stub are needed at BUILD time, because the ISO's own
+# UKI is produced inside this rootfs by kernel-install. They are also what
+# makes the live environment able to re-run kernel-install against the target
+# if that is ever needed.
+dracut
+systemd-ukify
+systemd-boot-efi
+
+# --- the installer's toolbox ----------------------------------------------
+mdadm
+xfsprogs
+e2fsprogs
+dosfstools
+util-linux
+parted
+gdisk
+squashfs-tools
+efibootmgr
+rsync
+tar
+cpio
+zstd
+xz-utils
+gzip
+
+# --- inspection ------------------------------------------------------------
+# The array gets looked at before anything is written to it, and half of that
+# is asking the disks how they feel about it.
+smartmontools
+pciutils
+usbutils
+lsscsi
+
+# --- interpreter -----------------------------------------------------------
+# The kernel-install plugins and the installer itself are Python. On the
+# installed system this is on the kernel-upgrade path, so it is a real
+# dependency rather than a convenience.
+python3-minimal
+
+# --- shell quality of life -------------------------------------------------
+bash
+bash-completion
+less
+nano
+vim-tiny
+procps
+psmisc
+file
+tree
+jq
+
+# --- network ---------------------------------------------------------------
+iproute2
+iputils-ping
+curl
+ca-certificates
+openssh-client
+
+# --- console ---------------------------------------------------------------
+kbd
+console-setup

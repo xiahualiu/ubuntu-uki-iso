@@ -1,0 +1,26 @@
+# Optional overlay: turn debug info off for a fast iteration build.
+#
+# NOT applied by default. Merged only when `make kernel DEBUG_INFO=0` is used.
+#
+# Why this exists: the full build with DWARF5 debug info plus BTF takes roughly
+# 45 minutes and about 15 GB of scratch space. That is the right default for a
+# kernel you intend to keep — debug info is what lets you decode a stack trace
+# when something crashes at 3am. It is the wrong default when you are iterating
+# on a driver or a config fragment and rebuilding every few minutes.
+#
+# The resulting kernel is functionally identical. What is lost:
+#   - CONFIG_DEBUG_INFO and therefore CONFIG_DEBUG_INFO_BTF: no eBPF CO-RE,
+#     so no bpftrace/cilium-style introspection of kernel types
+#   - symbolized kernel stack traces
+#
+# Keep this file in sync with the base config: DEBUG_INFO_NONE and DEBUG_INFO
+# are mutually exclusive, and leaving DEBUG_INFO_NONE unset while DEBUG_INFO is
+# also unset makes Kconfig pick a default rather than do what you meant.
+
+# CONFIG_DEBUG_INFO is not set
+CONFIG_DEBUG_INFO_NONE=y
+# CONFIG_DEBUG_INFO_BTF is not set
+# CONFIG_DEBUG_INFO_DWARF5 is not set
+
+# The -dbg package is not built when there is no debug info to put in it, which
+# is where most of the build time and disk savings come from.
