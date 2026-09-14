@@ -19,6 +19,8 @@ in a way that produces a machine that does not boot:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .. import settings
 from ..errors import ConfigError
 from ..paths import data_file
@@ -82,7 +84,7 @@ def render_installed_cmdline(root_uuid: str) -> str:
     )
 
 
-def dracut_conf(variant: str):
+def dracut_conf(variant: str) -> Path:
     """The dracut configuration for ``live`` or ``installed``.
 
     They differ in a way that matters: the live initramfs is built in a

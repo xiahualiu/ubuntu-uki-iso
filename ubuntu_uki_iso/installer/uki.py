@@ -18,6 +18,8 @@ the machine is bootable before the firmware entry even exists.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from .. import pe, settings
 from ..errors import BuildError
 from .context import Context
@@ -119,18 +121,21 @@ def _verify(ctx: Context) -> None:
             "bootable entry — though \\EFI\\BOOT\\BOOTX64.EFI may still be present."
         )
 
-    ctx.uki_path = versioned[0]
+    # Held in a local as well as on the context: `uki_path` is `Path | None` on
+    # the dataclass, and every check below needs the non-None guarantee this
+    # assignment just established.
+    uki_path = versioned[0]
+    ctx.uki_path = uki_path
     ctx.uki_rel = settings.FALLBACK_EFI_PATH
     console.ok(
-        f"UKI: {ctx.uki_path.relative_to(ctx.esp_mount)} "
-        f"({ctx.uki_path.stat().st_size // 1024 // 1024} MB)"
+        f"UKI: {uki_path.relative_to(ctx.esp_mount)} ({uki_path.stat().st_size // 1024 // 1024} MB)"
     )
 
-    _verify_fallback(ctx)
+    _verify_fallback(ctx, uki_path)
     _verify_cmdline(ctx)
 
 
-def _verify_fallback(ctx: Context) -> None:
+def _verify_fallback(ctx: Context, uki_path: Path) -> None:
     """Confirm the kernel-install plugin wrote the firmware fallback.
 
     This is the file that makes the machine bootable without NVRAM, and the
@@ -148,10 +153,10 @@ def _verify_fallback(ctx: Context) -> None:
             "ran and that python3 is present in the target."
         )
 
-    if fallback.stat().st_size != ctx.uki_path.stat().st_size:
+    if fallback.stat().st_size != uki_path.stat().st_size:
         raise BuildError(
             f"{fallback} is {fallback.stat().st_size} bytes but the UKI is "
-            f"{ctx.uki_path.stat().st_size} — the copy is truncated"
+            f"{uki_path.stat().st_size} — the copy is truncated"
         )
     ctx.console.ok("firmware fallback written: \\EFI\\BOOT\\BOOTX64.EFI")
 

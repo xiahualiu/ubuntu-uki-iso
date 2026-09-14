@@ -9,6 +9,7 @@ in either.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -18,14 +19,14 @@ from ubuntu_uki_iso.ukis import fallback, retention
 
 
 @pytest.fixture
-def esp(tmp_path):
+def esp(tmp_path: Path) -> Path:
     """A boot root with an empty EFI tree."""
     (tmp_path / "EFI/Linux").mkdir(parents=True)
     (tmp_path / "EFI/BOOT").mkdir(parents=True)
     return tmp_path
 
 
-def add_uki(esp, name: str, age_days: float) -> object:
+def add_uki(esp: Path, name: str, age_days: float) -> Path:
     path = esp / "EFI/Linux" / name
     path.write_bytes(make_uki())
     when = path.stat().st_mtime - age_days * 86400
@@ -38,13 +39,13 @@ def add_uki(esp, name: str, age_days: float) -> object:
 # ---------------------------------------------------------------------------
 
 
-def test_nothing_is_removed_below_the_limit(esp):
+def test_nothing_is_removed_below_the_limit(esp: Path) -> None:
     add_uki(esp, "a-1.0.efi", 3)
     add_uki(esp, "a-2.0.efi", 2)
     assert retention.prune(esp, keep=3, running_release="2.0") == []
 
 
-def test_the_oldest_are_removed_first(esp):
+def test_the_oldest_are_removed_first(esp: Path) -> None:
     """`keep` counts UKIs *in addition to* the protected ones.
 
     A system that keeps two and has a protected running kernel ends up with
@@ -65,7 +66,7 @@ def test_the_oldest_are_removed_first(esp):
     }
 
 
-def test_the_running_kernel_survives_even_when_it_is_the_oldest(esp):
+def test_the_running_kernel_survives_even_when_it_is_the_oldest(esp: Path) -> None:
     """Removing the executing kernel's UKI is the kind of thing that works
     fine until the next reboot."""
     add_uki(esp, "oldest-running.efi", 100)
@@ -77,7 +78,7 @@ def test_the_running_kernel_survives_even_when_it_is_the_oldest(esp):
     assert (esp / "EFI/Linux/oldest-running.efi").is_file()
 
 
-def test_the_just_installed_kernel_survives(esp):
+def test_the_just_installed_kernel_survives(esp: Path) -> None:
     """The subtle one.
 
     This runs from kernel-install, so the running kernel is still the *old*
@@ -94,24 +95,24 @@ def test_the_just_installed_kernel_survives(esp):
     assert "machine-1.0.efi" in remaining
 
 
-def test_keeping_zero_is_refused(esp):
+def test_keeping_zero_is_refused(esp: Path) -> None:
     add_uki(esp, "a.efi", 1)
     add_uki(esp, "b.efi", 2)
     assert retention.prune(esp, keep=0, running_release="a") == []
     assert len(list((esp / "EFI/Linux").iterdir())) == 2
 
 
-def test_a_missing_directory_is_not_an_error(tmp_path):
+def test_a_missing_directory_is_not_an_error(tmp_path: Path) -> None:
     assert retention.prune(tmp_path / "nothing-here", keep=3, running_release="x") == []
 
 
-def test_find_ukis_returns_newest_first(esp):
+def test_find_ukis_returns_newest_first(esp: Path) -> None:
     add_uki(esp, "old.efi", 10)
     add_uki(esp, "new.efi", 1)
     assert [uki.name for uki in retention.find_ukis(esp)] == ["new.efi", "old.efi"]
 
 
-def test_retention_ignores_non_efi_files(esp):
+def test_retention_ignores_non_efi_files(esp: Path) -> None:
     add_uki(esp, "real.efi", 1)
     (esp / "EFI/Linux/notes.txt").write_text("not a uki")
     retention.prune(esp, keep=0, running_release="real", just_installed="real")
@@ -124,17 +125,18 @@ def test_retention_ignores_non_efi_files(esp):
 # ---------------------------------------------------------------------------
 
 
-def test_the_uki_is_copied_to_the_firmware_path(esp):
+def test_the_uki_is_copied_to_the_firmware_path(esp: Path) -> None:
     add_uki(esp, "machine-1.0.efi", 1)
 
     installed = fallback.install(esp, "1.0")
+    assert installed is not None
 
     assert installed == esp / "EFI/BOOT/BOOTX64.EFI"
     assert installed.is_file()
     assert installed.read_bytes() == (esp / "EFI/Linux/machine-1.0.efi").read_bytes()
 
 
-def test_a_foreign_loader_is_preserved_once(esp):
+def test_a_foreign_loader_is_preserved_once(esp: Path) -> None:
     """shim and GRUB are worth keeping; our own previous copy is not."""
     shim = esp / "EFI/BOOT/BOOTX64.EFI"
     shim.write_bytes(make_pe({".text": b"\x90" * 256}))  # no .cmdline section
@@ -147,7 +149,7 @@ def test_a_foreign_loader_is_preserved_once(esp):
     assert b"\x90" in backup.read_bytes()
 
 
-def test_the_backup_is_never_overwritten(esp):
+def test_the_backup_is_never_overwritten(esp: Path) -> None:
     """A second run that clobbered it would eventually destroy the only copy
     of the loader known to work."""
     shim = esp / "EFI/BOOT/BOOTX64.EFI"
@@ -164,7 +166,7 @@ def test_the_backup_is_never_overwritten(esp):
     assert backup.read_bytes() == original_backup
 
 
-def test_our_own_previous_uki_is_not_backed_up(esp):
+def test_our_own_previous_uki_is_not_backed_up(esp: Path) -> None:
     """Otherwise every upgrade would quietly cost another 50 MB of ESP."""
     add_uki(esp, "machine-1.0.efi", 2)
     fallback.install(esp, "1.0")
@@ -175,7 +177,7 @@ def test_our_own_previous_uki_is_not_backed_up(esp):
     assert not (esp / "EFI/BOOT/BOOTX64.EFI.pre-ubuntu-uki-iso").exists()
 
 
-def test_a_missing_uki_leaves_the_fallback_alone(esp):
+def test_a_missing_uki_leaves_the_fallback_alone(esp: Path) -> None:
     add_uki(esp, "machine-1.0.efi", 1)
     fallback.install(esp, "1.0")
     before = (esp / "EFI/BOOT/BOOTX64.EFI").read_bytes()
@@ -184,12 +186,12 @@ def test_a_missing_uki_leaves_the_fallback_alone(esp):
     assert (esp / "EFI/BOOT/BOOTX64.EFI").read_bytes() == before
 
 
-def test_the_fallback_path_matches_the_constant():
+def test_the_fallback_path_matches_the_constant() -> None:
     assert ukis.FALLBACK_RELPATH.as_posix() == "EFI/BOOT/BOOTX64.EFI"
     assert settings.FALLBACK_EFI_PATH == r"\EFI\BOOT\BOOTX64.EFI"
 
 
-def test_looks_like_uki_distinguishes_a_uki_from_a_loader(tmp_path):
+def test_looks_like_uki_distinguishes_a_uki_from_a_loader(tmp_path: Path) -> None:
     uki = tmp_path / "a.efi"
     uki.write_bytes(make_uki())
     loader = tmp_path / "b.efi"
@@ -205,7 +207,9 @@ def test_looks_like_uki_distinguishes_a_uki_from_a_loader(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_the_plugins_ignore_verbs_other_than_add(esp, monkeypatch):
+def test_the_plugins_ignore_verbs_other_than_add(
+    esp: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("KERNEL_INSTALL_BOOT_ROOT", str(esp))
     add_uki(esp, "machine-1.0.efi", 1)
 
@@ -213,7 +217,7 @@ def test_the_plugins_ignore_verbs_other_than_add(esp, monkeypatch):
     assert not (esp / "EFI/BOOT/BOOTX64.EFI").exists()
 
 
-def test_the_plugins_run_on_add(esp, monkeypatch):
+def test_the_plugins_run_on_add(esp: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("KERNEL_INSTALL_BOOT_ROOT", str(esp))
     add_uki(esp, "machine-1.0.efi", 1)
 
@@ -221,6 +225,6 @@ def test_the_plugins_run_on_add(esp, monkeypatch):
     assert (esp / "EFI/BOOT/BOOTX64.EFI").is_file()
 
 
-def test_the_plugins_report_a_bad_argv(esp):
+def test_the_plugins_report_a_bad_argv(esp: Path) -> None:
     assert fallback.main(["prog"]) == 1
     assert retention.main(["prog"]) == 1

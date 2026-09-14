@@ -14,18 +14,18 @@ from ubuntu_uki_iso.errors import ConfigError
 # ---------------------------------------------------------------------------
 
 
-def test_the_packaged_guard_list_parses():
+def test_the_packaged_guard_list_parses() -> None:
     entries = kconfig.parse_guard()
     assert len(entries) > 20
     assert all(entry.symbol.startswith("CONFIG_") for entry in entries)
 
 
-def test_nothing_on_the_guard_list_is_trimmed():
+def test_nothing_on_the_guard_list_is_trimmed() -> None:
     """The cheap half of `ubuntu-uki-iso doctor`, and the one that protects Docker."""
     assert kconfig.guard_overlap() == []
 
 
-def test_every_guard_symbol_is_a_real_requirement():
+def test_every_guard_symbol_is_a_real_requirement() -> None:
     for entry in kconfig.parse_guard():
         assert entry.requirement in (None, "y", "m")
 
@@ -47,18 +47,18 @@ def test_every_guard_symbol_is_a_real_requirement():
         ("m", None, False),
     ],
 )
-def test_guard_requirements(requirement, value, expected):
+def test_guard_requirements(requirement: str | None, value: str | None, expected: bool) -> None:
     assert kconfig.GuardEntry("CONFIG_FOO", requirement).satisfied_by(value) is expected
 
 
-def test_check_guard_reports_what_is_missing():
+def test_check_guard_reports_what_is_missing() -> None:
     """An empty config means every guarded symbol is absent."""
     failures = kconfig.check_guard("")
     assert len(failures) == len(kconfig.parse_guard())
     assert any("CONFIG_OVERLAY_FS" in failure for failure in failures)
 
 
-def test_check_guard_accepts_a_module_where_a_module_will_do():
+def test_check_guard_accepts_a_module_where_a_module_will_do() -> None:
     """`CONFIG_OVERLAY_FS=m` satisfies `CONFIG_OVERLAY_FS` — dracut can load it."""
     assert not kconfig.check_guard("CONFIG_OVERLAY_FS=m\n") or True
     unmet = [
@@ -69,21 +69,21 @@ def test_check_guard_accepts_a_module_where_a_module_will_do():
     assert unmet, "a disabled symbol must be reported"
 
 
-def test_check_guard_is_silent_when_everything_is_present():
+def test_check_guard_is_silent_when_everything_is_present() -> None:
     text = "\n".join(
         f"{entry.symbol}={entry.requirement or 'y'}" for entry in kconfig.parse_guard()
     )
     assert kconfig.check_guard(text) == []
 
 
-def test_parse_config_values_distinguishes_unset_from_absent():
+def test_parse_config_values_distinguishes_unset_from_absent() -> None:
     values = kconfig.parse_config_values("CONFIG_A=y\n# CONFIG_B is not set\n")
     assert values["CONFIG_A"] == "y"
     assert values["CONFIG_B"] is None
     assert "CONFIG_C" not in values
 
 
-def test_a_typo_in_the_fragment_is_detected():
+def test_a_typo_in_the_fragment_is_detected() -> None:
     """A typo'd trim line is a trim that silently did not happen."""
     base = "CONFIG_REAL=y\n"
     unknown = kconfig.unknown_fragment_symbols(base, kconfig.trim_fragment())
@@ -96,7 +96,7 @@ def test_a_typo_in_the_fragment_is_detected():
 # ---------------------------------------------------------------------------
 
 
-def test_the_live_cmdline_has_its_label_substituted():
+def test_the_live_cmdline_has_its_label_substituted() -> None:
     rendered = boot.cmdline_live()
     assert "@@" not in rendered
     assert f"CDLABEL={settings.VOLID}" in rendered
@@ -104,28 +104,28 @@ def test_the_live_cmdline_has_its_label_substituted():
     assert "rd.live.squashimg=filesystem.squashfs" in rendered
 
 
-def test_the_live_cmdline_does_not_auto_assemble_the_array():
+def test_the_live_cmdline_does_not_auto_assemble_the_array() -> None:
     """The array stays untouched until the installer deliberately assembles it."""
     assert "rd.md=0" in boot.cmdline_live()
 
 
-def test_the_installed_cmdline_ships_unrendered():
+def test_the_installed_cmdline_ships_unrendered() -> None:
     """It cannot be rendered: the UUID does not exist until the disk is made."""
     assert boot.ROOT_UUID_PLACEHOLDER in boot.cmdline_installed_unrendered()
 
 
-def test_rendering_the_installed_cmdline_substitutes_the_uuid():
+def test_rendering_the_installed_cmdline_substitutes_the_uuid() -> None:
     rendered = boot.render_installed_cmdline("1234-abcd")
     assert "root=UUID=1234-abcd" in rendered
     assert "@@" not in rendered
 
 
-def test_rendering_refuses_an_empty_uuid():
+def test_rendering_refuses_an_empty_uuid() -> None:
     with pytest.raises(ConfigError):
         boot.render_installed_cmdline("")
 
 
-def test_rendering_refuses_the_placeholder_itself():
+def test_rendering_refuses_the_placeholder_itself() -> None:
     with pytest.raises(ConfigError):
         boot.render_installed_cmdline(boot.ROOT_UUID_PLACEHOLDER)
 
@@ -136,29 +136,29 @@ def test_rendering_refuses_the_placeholder_itself():
 
 
 @pytest.mark.parametrize("variant", ["live", "installed"])
-def test_package_lists_load(variant):
+def test_package_lists_load(variant: str) -> None:
     packages = package_list(variant)
     assert len(packages) > 10
     assert "python3-minimal" in packages, "the plugins need an interpreter"
 
 
 @pytest.mark.parametrize("variant", ["live", "installed"])
-def test_dracut_configs_exist(variant):
+def test_dracut_configs_exist(variant: str) -> None:
     assert boot.dracut_conf(variant).is_file()
 
 
-def test_the_esp_label_fits_in_a_fat_volume_name():
+def test_the_esp_label_fits_in_a_fat_volume_name() -> None:
     """mkfs.vfat fails outright at 12 characters, at the last step of the build."""
     assert len(settings.ESP_LABEL) <= 11
 
 
-def test_the_trim_fragment_and_guard_list_both_exist():
+def test_the_trim_fragment_and_guard_list_both_exist() -> None:
     assert kconfig.trim_fragment().is_file()
     assert kconfig.never_disable().is_file()
     assert kconfig.nodebug_fragment().is_file()
 
 
-def test_the_guard_covers_what_the_live_medium_arrives_on():
+def test_the_guard_covers_what_the_live_medium_arrives_on() -> None:
     """A regression test for a real bug, not a hypothetical.
 
     ``CONFIG_SCSI_VIRTIO`` once lived inside the ``if SCSI_LOWLEVEL`` menu block
@@ -194,7 +194,7 @@ def test_the_guard_covers_what_the_live_medium_arrives_on():
     )
 
 
-def test_the_guard_does_not_still_guard_the_virtio_stack():
+def test_the_guard_does_not_still_guard_the_virtio_stack() -> None:
     """The harness stopped using virtio-scsi; guarding it would be dead weight.
 
     A guard entry for something nothing uses is not harmless — it is a check
@@ -208,7 +208,7 @@ def test_the_guard_does_not_still_guard_the_virtio_stack():
         )
 
 
-def test_the_guard_covers_the_storage_this_machine_uses():
+def test_the_guard_covers_the_storage_this_machine_uses() -> None:
     guarded = {entry.symbol for entry in kconfig.parse_guard()}
     for symbol in ("CONFIG_SATA_AHCI", "CONFIG_BLK_DEV_NVME", "CONFIG_MD_RAID0"):
         assert symbol in guarded, f"{symbol} is not guarded"

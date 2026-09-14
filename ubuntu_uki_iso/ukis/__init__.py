@@ -17,11 +17,12 @@ executables that call into it.
 
 from __future__ import annotations
 
-from .fallback import FALLBACK_RELPATH
+from .fallback import BACKUP_RELPATH, FALLBACK_RELPATH
 from .fallback import install as install_fallback
 from .retention import UKI_SUBDIR, find_ukis, prune
 
 __all__ = [
+    "BACKUP_RELPATH",
     "FALLBACK_RELPATH",
     "UKI_SUBDIR",
     "find_ukis",

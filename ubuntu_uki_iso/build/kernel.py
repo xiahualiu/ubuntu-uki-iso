@@ -28,6 +28,7 @@ import tarfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .. import settings
 from ..config import kernel as kconfig
@@ -218,7 +219,9 @@ class KernelBuild:
 
     @staticmethod
     def _unpack(tarball: Path, dest: Path) -> None:
-        mode = "r:bz2" if tarball.suffix == ".bz2" else "r:*"
+        # Annotated as a Literal: `tarfile.open` is overloaded on the exact
+        # mode string, and a plain `str` matches none of the overloads.
+        mode: Literal["r:bz2", "r:*"] = "r:bz2" if tarball.suffix == ".bz2" else "r:*"
         with tarfile.open(tarball, mode) as archive:
             archive.extractall(dest, filter="data")
 

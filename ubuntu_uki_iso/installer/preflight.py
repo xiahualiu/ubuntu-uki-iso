@@ -33,6 +33,7 @@ from ..errors import Refusal
 from ..log import Console
 from ..proc import Runner
 from . import device
+from .device import MdSuperblock
 
 
 class Decision(Enum):
@@ -62,7 +63,9 @@ class DiskScan:
     device: str
     exists: bool
     mounted: bool
-    md: device.MdSuperblock | None
+    #: Spelled with the class imported directly: inside this class body the
+    #: `device` name above shadows the module of the same name.
+    md: MdSuperblock | None
     filesystems: tuple[str, ...]
 
     @property

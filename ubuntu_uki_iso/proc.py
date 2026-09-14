@@ -27,12 +27,17 @@ from __future__ import annotations
 import shlex
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 from .errors import CommandFailed, NotConfirmed, ToolMissing
 from .log import Console, get_console
+
+#: What a deferred value will turn out to be once the dry run is over. See
+#: :meth:`Runner.value_or`.
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -216,7 +221,9 @@ class Runner:
 
     # -- plans -------------------------------------------------------------
 
-    def value_or(self, placeholder: str, func, *args, **kwargs):
+    def value_or(
+        self, placeholder: str, func: Callable[..., _T], *args: object, **kwargs: object
+    ) -> _T | str:
         """A value that only exists after a mutating step has run.
 
         In a dry run there is no such value, so the caller supplies the

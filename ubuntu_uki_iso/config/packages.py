@@ -14,6 +14,7 @@ Two lists, for two different systems:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,7 +36,7 @@ class PackageList:
     def __len__(self) -> int:
         return len(self.entries)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         return iter(self.entries)
 
     def comma_joined(self) -> str:

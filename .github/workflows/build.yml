@@ -57,8 +57,8 @@ jobs:
         run: pip install -e '.[dev]'
       - name: lint
         run: |
-          ruff check ubuntu-uki-iso tests
-          ruff format --check ubuntu-uki-iso tests
+          ruff check ubuntu_uki_iso tests
+          ruff format --check ubuntu_uki_iso tests
       - name: workflow syntax
         run: |
           python3 -c "import yaml,sys; yaml.safe_load(open('.github/workflows/build.yml'))"

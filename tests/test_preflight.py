@@ -59,12 +59,12 @@ def verdict(preflight: Preflight, mode: RaidMode) -> tuple[Decision, str]:
 # ---------------------------------------------------------------------------
 
 
-def test_all_members_present_is_reused():
+def test_all_members_present_is_reused() -> None:
     decision, _ = verdict(scan_all(md=member()), RaidMode.REUSE)
     assert decision is Decision.REUSE
 
 
-def test_reuse_wins_over_an_explicit_create():
+def test_reuse_wins_over_an_explicit_create() -> None:
     """--raid=create does not override an array that is actually there.
 
     Reusing is the safe reading of an ambiguous ask: the operator who wanted a
@@ -81,7 +81,7 @@ def test_reuse_wins_over_an_explicit_create():
 
 
 @pytest.mark.parametrize("mode", [RaidMode.REUSE, RaidMode.CREATE])
-def test_filesystems_without_a_superblock_are_refused_in_both_modes(mode):
+def test_filesystems_without_a_superblock_are_refused_in_both_modes(mode: RaidMode) -> None:
     """Disks with data but no md superblock.
 
     This is the catastrophic case, and there is no flag that makes it fine —
@@ -92,14 +92,14 @@ def test_filesystems_without_a_superblock_are_refused_in_both_modes(mode):
     assert "NOT blank" in reason
 
 
-def test_blank_disks_are_not_created_without_being_asked():
+def test_blank_disks_are_not_created_without_being_asked() -> None:
     decision, reason = verdict(scan_all(), RaidMode.REUSE)
     assert decision is Decision.REFUSE
     assert "No md superblock" in reason
     assert "Nothing has been changed" in reason
 
 
-def test_blank_disks_are_created_when_asked():
+def test_blank_disks_are_created_when_asked() -> None:
     decision, _ = verdict(scan_all(), RaidMode.CREATE)
     assert decision is Decision.CREATE
 
@@ -109,13 +109,13 @@ def test_blank_disks_are_created_when_asked():
 # ---------------------------------------------------------------------------
 
 
-def test_a_different_array_uuid_is_refused():
+def test_a_different_array_uuid_is_refused() -> None:
     decision, reason = verdict(scan_all(md=member(uuid=OTHER_UUID)), RaidMode.REUSE)
     assert decision is Decision.REFUSE
     assert OTHER_UUID in reason and MD_UUID in reason
 
 
-def test_partial_membership_is_refused():
+def test_partial_membership_is_refused() -> None:
     scans = [
         DiskScan(path, True, False, member() if i < 4 else None, ())
         for i, path in enumerate(DATA_DISKS)
@@ -125,7 +125,7 @@ def test_partial_membership_is_refused():
     assert "partial" in reason.lower()
 
 
-def test_two_arrays_on_one_set_of_disks_is_refused():
+def test_two_arrays_on_one_set_of_disks_is_refused() -> None:
     scans = [
         DiskScan(path, True, False, member(uuid=MD_UUID if i < 4 else OTHER_UUID), ())
         for i, path in enumerate(DATA_DISKS)
@@ -142,20 +142,20 @@ def test_two_arrays_on_one_set_of_disks_is_refused():
 # ---------------------------------------------------------------------------
 
 
-def test_a_missing_disk_is_refused():
+def test_a_missing_disk_is_refused() -> None:
     scans = [DiskScan(path, path != "/dev/sde", False, member(), ()) for path in DATA_DISKS]
     decision, reason = verdict(Preflight(scans=scans, array_uuids=[MD_UUID]), RaidMode.REUSE)
     assert decision is Decision.REFUSE
     assert "/dev/sde" in reason
 
 
-def test_a_mounted_member_is_refused():
+def test_a_mounted_member_is_refused() -> None:
     decision, reason = verdict(scan_all(md=member(), mounted=True), RaidMode.REUSE)
     assert decision is Decision.REFUSE
     assert "mounted" in reason
 
 
-def test_the_root_disk_may_not_also_be_a_data_disk():
+def test_the_root_disk_may_not_also_be_a_data_disk() -> None:
     scans = [DiskScan(path, True, False, member(), ()) for path in DATA_DISKS]
     scans[0] = DiskScan(ROOT_DISK, True, False, member(), ())
     disks = [ROOT_DISK, *DATA_DISKS[1:]]
@@ -180,7 +180,7 @@ def test_the_root_disk_may_not_also_be_a_data_disk():
         (member(devices=7), "member slots"),
     ],
 )
-def test_a_differently_shaped_array_is_refused(md, fragment):
+def test_a_differently_shaped_array_is_refused(md: MdSuperblock, fragment: str) -> None:
     """A RAID0 that assembles with the wrong geometry still mounts.
 
     It just returns different bytes at every offset, which is why the shape is
@@ -191,12 +191,12 @@ def test_a_differently_shaped_array_is_refused(md, fragment):
     assert fragment in reason
 
 
-def test_raid_none_skips_the_array_entirely():
+def test_raid_none_skips_the_array_entirely() -> None:
     decision, _ = verdict(scan_all(), RaidMode.NONE)
     assert decision is Decision.NONE
 
 
-def test_raid_mode_rejects_an_unknown_value():
+def test_raid_mode_rejects_an_unknown_value() -> None:
     from ubuntu_uki_iso.errors import Refusal
 
     with pytest.raises(Refusal):

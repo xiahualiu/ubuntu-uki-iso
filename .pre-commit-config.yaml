@@ -1,0 +1,50 @@
+# Hooks for the checks that must not reach `main` broken.
+#
+# Each `rev` is the version that actually runs: pre-commit gives every hook its
+# own environment, so whatever is installed in .venv has no bearing on what a
+# commit is checked with. The `dev` extras in pyproject.toml pin the same tools
+# for the editor and for running them by hand — keep the two in step.
+#
+# `pre-commit install` is the one-time step that puts these on `git commit`.
+
+repos:
+  # ---------------------------------------------------------------------------
+  # ruff — both halves. `--fix` and the formatter rewrite in place, which is
+  # the intended shape: the hook fails, the repairs are already on disk, and
+  # re-staging them is the commit.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ---------------------------------------------------------------------------
+  # pyright — the engine under Pylance, so these are the findings the editor
+  # shows. `pass_filenames: false` on purpose: handed one file, pyright checks
+  # that file alone, and a change that breaks a caller in another module would
+  # sail through. The scope comes from `include` in [tool.pyright] instead.
+  #
+  # pytest is an additional dependency because the hook's environment holds
+  # only pyright; without it `import pytest` in tests/ cannot be resolved.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.414
+    hooks:
+      - id: pyright
+        pass_filenames: false
+        additional_dependencies: [pytest]
+
+  # ---------------------------------------------------------------------------
+  # mypy — the stricter of the two, and the one whose config in pyproject.toml
+  # (disallow_untyped_defs) is the reason the package is annotated throughout.
+  # Same pass_filenames reasoning as pyright: a type checker wants the project.
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.1
+    hooks:
+      - id: mypy
+        pass_filenames: false
+        args: [ubuntu_uki_iso, tests]
+        additional_dependencies: [pytest]

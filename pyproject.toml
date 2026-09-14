@@ -35,6 +35,11 @@ dev = [
   "pytest-cov",
   "ruff",
   "mypy",
+  # Pylance is the editor front end; pyright is the engine under it, and the
+  # only half that can run in a hook. Having it here too means the editor and
+  # the hook consult the same [tool.pyright] block below.
+  "pyright",
+  "pre-commit",
 ]
 
 [project.scripts]
@@ -95,3 +100,26 @@ warn_unused_configs = true
 warn_redundant_casts = true
 disallow_untyped_defs = true
 no_implicit_optional = true
+
+# The same engine Pylance runs in the editor, so a squiggle there and a failed
+# hook here are the same finding.
+#
+# `include` is the load-bearing line. Without it pyright walks the whole tree,
+# including `out/` — unpacked kernel sources and expanded rootfs trees, none of
+# it this repository's code — and reports thousands of errors about it. GitHub
+# review of a diff is not helped by knowing that the kernel's own sources have
+# type errors.
+[tool.pyright]
+include = ["ubuntu_uki_iso", "tests"]
+exclude = ["**/node_modules", "**/__pycache__", "**/.*"]
+pythonVersion = "3.11"
+pythonPlatform = "Linux"
+typeCheckingMode = "standard"
+
+# Without this pyright resolves imports against whatever `python` happens to be
+# on PATH — for a bare `pyright` run from a shell that is /usr/bin/python3,
+# which has no pytest, and every test module reports an unresolvable import.
+# Naming the venv makes a hand run and a hook run agree. A missing .venv is a
+# warning, not an error: the pre-commit hook carries pytest itself.
+venvPath = "."
+venv = ".venv"

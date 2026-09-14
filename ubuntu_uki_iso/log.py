@@ -12,6 +12,7 @@ call when it is not — build logs get piped and captured constantly.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import TextIO
 
 # The exit code a refusal uses, kept here so the console and the exception
@@ -32,7 +33,7 @@ class Console:
         stdout: TextIO | None = None,
         stderr: TextIO | None = None,
         colour: bool | None = None,
-        log_path: object | None = None,
+        log_path: str | Path | None = None,
     ) -> None:
         self.out = stdout if stdout is not None else sys.stdout
         self.err = stderr if stderr is not None else sys.stderr

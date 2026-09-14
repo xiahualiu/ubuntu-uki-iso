@@ -9,6 +9,8 @@ construct the device state they need rather than discovering it.
 from __future__ import annotations
 
 import io
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,7 +27,7 @@ class RecordingRunner(Runner):
     test.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any) -> None:
         kwargs.setdefault("dry_run", False)
         kwargs.setdefault(
             "console", Console(colour=False, stdout=io.StringIO(), stderr=io.StringIO())
@@ -38,7 +40,17 @@ class RecordingRunner(Runner):
         """Make any command whose joined argv contains ``match`` return this."""
         self._responses[match] = Result([match], returncode, stdout, "")
 
-    def probe(self, *argv, check=False, timeout=None):
+    # The overrides take the same parameters as :class:`Runner` so that a test
+    # can call them exactly as it would the real thing. Everything that only
+    # matters when a command actually runs — ``check``, ``timeout``, ``quiet``,
+    # ``log``, ``cwd`` — is accepted and ignored.
+    def probe(
+        self,
+        *argv: str | Path,
+        check: bool = False,
+        timeout: float | None = None,
+        cwd: Path | None = None,
+    ) -> Result:
         args = [str(a) for a in argv]
         self.probed.append(args)
         joined = " ".join(args)
@@ -47,12 +59,19 @@ class RecordingRunner(Runner):
                 return Result(args, result.returncode, result.stdout, result.stderr)
         return Result(args, 0, "", "")
 
-    def run(self, *argv, check=True, quiet=False, log=None):
+    def run(
+        self,
+        *argv: str | Path,
+        check: bool = True,
+        quiet: bool = False,
+        log: Path | None = None,
+        cwd: Path | None = None,
+    ) -> Result:
         args = [str(a) for a in argv]
         self.executed.append(args)
         return Result(args, 0)
 
-    def destructive(self, what, *argv, check=True):
+    def destructive(self, what: str, *argv: str | Path, check: bool = True) -> Result:
         args = [str(a) for a in argv]
         self.executed.append(args)
         return Result(args, 0)

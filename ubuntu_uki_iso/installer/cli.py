@@ -163,7 +163,11 @@ def install(args: argparse.Namespace, console: Console) -> int:
     if not args.root_disk:
         raise Refusal("--root-disk is required")
 
-    data_disks = (args.data_disks or "").split()
+    # Annotated rather than inferred: argparse hands back `Any`, and pyright
+    # models `Any or ""` as `LiteralString | Any`, whose `.split()` is a
+    # `list[LiteralString]` — not assignable to the `list[str]` downstream.
+    raw_data_disks: str = args.data_disks or ""
+    data_disks = raw_data_disks.split()
     mode = RaidMode.parse(args.raid)
     if mode is not RaidMode.NONE and not data_disks:
         raise Refusal("--data-disks is required (or pass --raid=none)")

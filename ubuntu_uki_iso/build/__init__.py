@@ -16,4 +16,5 @@ a constraint rather than a preference.
 
 from __future__ import annotations
 
-__all__ = ["container", "entry", "iso", "kernel", "rootfs", "squashfs", "uki"]
+# No `__all__`: the steps below are run as `python3 -m ...`, never imported
+# here, so naming them in `__all__` would promise names this module never binds.

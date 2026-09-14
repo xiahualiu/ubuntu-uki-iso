@@ -14,4 +14,6 @@ so each one's ``main()`` takes the target directory as its first argument.
 
 from __future__ import annotations
 
-__all__ = ["common", "installed", "live"]
+# No `__all__`: naming the submodules there would be a lie, since they are
+# deliberately not imported here — mmdebstrap runs each one with `-m`, and a
+# star-import would try to resolve names this module never binds.
