@@ -633,6 +633,7 @@ class Harness:
                 "findmnt -n -o FSTYPE /",
                 "cat /proc/cmdline",
                 "ls -l /payload/rootfs.squashfs",
+                "ls -l /payload/debs/*.deb",
                 "ls -l /live/filesystem.squashfs 2>/dev/null",
                 self._data_disks_shell(),
                 'set -- $DATA; echo "data-disks:$#"',
@@ -656,6 +657,16 @@ class Harness:
                     "the payload is visible on the medium",
                     "the payload squashfs is not on the mounted medium",
                     "rootfs.squashfs",
+                ),
+                # The payload carries no kernel, so these are what the target's
+                # kernel comes from. An ISO missing them installs a root
+                # filesystem that cannot boot, and the installer is the only
+                # thing that would notice.
+                Check(
+                    "the kernel packages are on the medium",
+                    "no kernel packages on the medium — the target would get no kernel",
+                    r"linux-image-\S+\.deb",
+                    regex=True,
                 ),
                 # That the ISO booted at all is proved by reaching this point.
                 # How it booted is worth asserting separately: a USB transport
@@ -827,6 +838,19 @@ class Harness:
                 'echo "RC=$?"',
                 "ls -l /mnt/ubuntu-uki-iso-target/boot/efi/EFI/Linux/ 2>/dev/null",
                 "cat /mnt/ubuntu-uki-iso-target/etc/kernel/cmdline",
+                # The kernel is not in the payload: it is installed from the
+                # medium with apt, so whether it landed is a separate question
+                # from whether the installer returned 0. Prefixed so that the
+                # check below cannot be satisfied by the installer's own chatter
+                # echoing the release back.
+                "ls /mnt/ubuntu-uki-iso-target/lib/modules/ | sed 's/^/modules:/'",
+                # The hook that makes the kernel package install above build a
+                # UKI at all. Checked separately from the UKI itself, so that a
+                # missing trigger is reported as a missing trigger rather than
+                # as "no UKI appeared".
+                "ls /mnt/ubuntu-uki-iso-target/etc/kernel/postinst.d/ 2>/dev/null",
+                "test -d /mnt/ubuntu-uki-iso-target/var/tmp/kernel-debs"
+                " && echo LEFTOVER || echo deb-staging-cleaned",
                 "efibootmgr | grep -i ubuntu-uki-iso",
                 "echo END",
             ]
@@ -838,6 +862,31 @@ class Harness:
             name,
             [
                 Check("installer exited 0", "installer did not exit 0", "RC=0"),
+                Check(
+                    "the kernel package installed",
+                    "the target has no /lib/modules/<release> — the kernel was not "
+                    "installed, so the UKI has no modules to load",
+                    r"modules:\S*-ubuntu-uki-iso",
+                    regex=True,
+                ),
+                Check(
+                    "the kernel-install trigger is installed",
+                    "no postinst hook in the target: installing a kernel package "
+                    "there would build no UKI, now or on any future upgrade",
+                    "zz-ubuntu-uki-iso",
+                ),
+                Check(
+                    "the staged packages were cleaned up",
+                    "the packages are still in the target's /var/tmp",
+                    "deb-staging-cleaned",
+                ),
+                Check(
+                    "the target's cmdline names its own root filesystem",
+                    "the cmdline still carries a placeholder: the UKI built from it "
+                    "would panic at boot looking for a filesystem that does not exist",
+                    r"root=UUID=[0-9a-f]{8}-",
+                    regex=True,
+                ),
                 Check(
                     "a UKI landed on the ESP",
                     "no UKI on the ESP",

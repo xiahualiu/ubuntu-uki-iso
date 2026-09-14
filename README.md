@@ -4,7 +4,7 @@ A reproducible, purpose-built Ubuntu 26.04 image for one specific machine: a cus
 
 > **Status: implemented, partially verified.** Everything in the repository layout below exists and runs. What has been proven by execution, and what has only been written, is set out honestly in [Verification](#verification) — the short version is that the static half of the build (config, containers, ISO assembly, package resolution) is verified, and the long half (the 45-minute kernel build, the rootfs, the UKI, and the QEMU tests) has not been run here.
 >
-> The design below is unchanged. Where implementation forced a decision the design did not cover, it is recorded under [Implementation notes](#implementation-notes). Of the five open items the design listed, four are answered — one of them by discovering that the design's `xorriso` flags did not work — and one, the dracut `rd.live.*` incantation, still needs a built initramfs to settle.
+> The design below carries one revision since it was written: the kernel now reaches the target as a Debian package rather than being copied in, which is recorded under [Implementation notes](#implementation-notes) along with the decisions implementation forced. Of the five open items the design listed, four are answered — one of them by discovering that the design's `xorriso` flags did not work — and one, the dracut `rd.live.*` incantation, still needs a built initramfs to settle.
 >
 > **A note on the language.** The design notes assume shell scripts. This is a Python package instead: a `pyproject.toml`, a console script, and subpackages for the build, the installer and the kernel-install plugins. Two consequences worth knowing before reading further: `python3-minimal` is now a dependency of the installed system, because the plugins that run on every kernel upgrade are Python; and the Makefile is gone, because its targets were always thin wrappers and the interesting part — which flag reaches which step, and what a failure means — was spread across both it and the scripts.
 
@@ -20,7 +20,7 @@ Three things make this worth doing as a project rather than a one-off script:
 2. **The image is reproducible from source.** Today the box's state lives in `curtin`-era fstab entries and hand-installed packages. After this, `ubuntu-uki-iso build kernel && ubuntu-uki-iso build iso` regenerates the whole thing, and CI proves it still builds.
 3. **The 58 TB array is treated as precious.** The installer's default path assembles and mounts the existing array without ever writing to it. Creating a RAID0 is opt-in, gated, and preflight-checked.
 
-**Deliverable:** a project that builds a custom kernel, a UKI, and a hybrid ISO which live-boots via dracut and installs a minimal server + Docker rootfs onto this exact storage layout.
+**Deliverable:** a project that builds a custom kernel, a UKI, and a hybrid ISO which live-boots via dracut and installs a minimal server + Docker rootfs onto this exact storage layout. The kernel reaches the target as a Debian package built here and carried on the medium, so a later kernel upgrade on that machine is the same operation the install was.
 
 ---
 
@@ -94,7 +94,7 @@ uki_generator=ukify
 root=UUID=<root-uuid> ro quiet
 ```
 
-`kernel-install add <ver> /boot/vmlinuz-<ver>` then drives dracut → ukify → `90-uki-copy.install`, landing the UKI on the ESP. The firmware entry is created once:
+`kernel-install add <ver> /boot/vmlinuz-<ver>` then drives dracut → ukify → `90-uki-copy.install`, landing the UKI on the ESP. What calls `kernel-install` is the image's own hook in `/etc/kernel/postinst.d/`, because nothing in a stock Ubuntu system does — see [Implementation notes](#implementation-notes). The firmware entry is created once:
 
 ```bash
 efibootmgr --create --disk /dev/nvme0n1 --part 1 \
@@ -129,19 +129,21 @@ Build via `make bindeb-pkg -j32` with `CONFIG_LOCALVERSION="-ubuntu-uki-iso"`, p
 ### ISO — mmdebstrap → squashfs → xorriso, booting the same UKI
 
 ```
-mmdebstrap (resolute, minbase) ─> install custom kernel .deb
-        │
-        ├─ live rootfs ──────> mksquashfs ──> /live/filesystem.squashfs
-        │        └─> kernel-install ──> the ISO's own UKI ──> efi.img ─┐
-        │                                                             │
-        └─ installed rootfs ─> mksquashfs ──> /payload/rootfs.squashfs │
-                                                                      │
-                                                    xorriso hybrid ───┴─> ubuntu_uki_iso.iso
+mmdebstrap (resolute, minbase) ─┬─ live rootfs ──> install the kernel .deb
+        │                       │       └─> kernel-install ──> the ISO's own UKI ──> efi.img ─┐
+        │                       │                                                             │
+        │                       └─ installed rootfs ──> mksquashfs ──> /payload/rootfs.squashfs│
+        │                                        (deliberately no kernel)                    │
+        └─ make bindeb-pkg ──> kernel .debs ──> /payload/debs/*.deb ──────────────────────────┤
+                                                                                              │
+                                                      xorriso hybrid ─────────────────────────┴─> ubuntu_uki_iso.iso
 ```
 
 Two rootfs images rather than one. The design has a single image "stripped of live-only state" at install time; building both up front keeps the installer a copy operation and keeps the destructive step simple. See [Implementation notes](#implementation-notes).
 
-The ISO carries the **same kernel** as the installed system — the same `.deb`, installed into both — so live boot is a genuine rehearsal of the target rather than a separate environment that can drift. The UKIs necessarily differ in one respect: the live image must point at the squashfs and the installed image must point at its root filesystem.
+The ISO carries the **same kernel** as the installed system — the same `.deb`, built once. In the live image it is installed at build time, because the ISO's own UKI is built from it. In the installed image it is not installed at all: the payload travels without a kernel, and the target gets one by installing that package from the medium, with apt. That is not a shortcut — it is the point. The install becomes the first kernel upgrade the machine has, through the same path as every later one. See [Implementation notes](#implementation-notes).
+
+The UKIs differ in one respect: the live image must point at the squashfs and the installed image must point at its root filesystem.
 
 Live boot is dracut's, not Debian's `live-boot`. The layout is Debian-conventional (`/live/filesystem.squashfs`), so the cmdline must point dracut at it explicitly:
 
@@ -176,6 +178,8 @@ ubuntu-uki-iso install
 ```
 
 `--dry-run` is the default rather than an opt-in. The failure mode this guards against is running the installer on the wrong machine — or on this one by accident — and finding out after `mdadm --create`.
+
+**The kernel is installed, not copied.** The installer formats the root filesystem, unsquashes the payload onto it, writes the fstab and the real root UUID into the command line, and then copies the two `.deb`s the medium carries into the target and runs `apt-get install` there, in a chroot. The package's own postinst runs `kernel-install` → dracut → ukify → the UKI on the ESP. Nothing about the UKI is special-cased: the same maintainer script that installs the kernel here is the one that will run on every future kernel upgrade on that machine, so the mechanism is exercised before there is anything to lose. See [Implementation notes](#implementation-notes).
 
 ---
 
@@ -270,8 +274,12 @@ Everything here was run against this machine or the build container.
 | The SCSI removal is safe | Configured the real kernel both ways and diffed: everything the machine and the live medium need survives `SCSI_LOWLEVEL=n` | `BLK_DEV_SR`, `BLK_DEV_SD`, `SATA_AHCI`, `BLK_DEV_NVME`, `MD_RAID0`, `USB_STORAGE` all survive |
 | The code is sound | `ruff check`, `ruff format --check`, `pyright`, `mypy` — or `pre-commit run --all-files`, which runs all four | clean |
 | The RAID decision table is correct | `pytest` — constructed device state, every device helper stubbed | 15 cases |
-| The whole suite | `ubuntu-uki-iso test unit` | 97 passed, 1 skipped |
+| The whole suite | `ubuntu-uki-iso test unit` | 123 passed, 1 skipped |
 | A UKI's command line can be read back | PE section parsing, against hand-built PE files | 8 cases |
+| The kernel packages resolve offline | `pytest` — the build-time guard, against a stubbed chroot: it accepts a resolvable install, and fails the build on one apt would have to fetch for | 3 cases |
+| The UKI is harvested from where kernel-install puts it | `pytest` — `EFI/Linux/*.efi`, against a built staging tree, including that the fallback copy is not mistaken for it | 5 cases |
+| A kernel package install builds a UKI | `pytest` — the postinst hook against a stubbed `kernel-install`: the verb, the arguments `run-parts` passes, the boot root, and that a failure is passed through rather than swallowed | 6 cases |
+| Nothing on the target calls kernel-install by itself | The maintainer scripts `builddeb` generates (read from the unpacked source tree), and `/etc/kernel/postinst.d` on the build host | true — which is why `ukis/trigger.py` exists |
 
 The negative control in row 4 is the one worth reading. Re-adding the line that caused the SCSI_VIRTIO bug now refuses the build, and names the symbol and the line in `never-disable.list` that requires it. Before the fix, that line produced a kernel that built cleanly.
 
@@ -290,6 +298,8 @@ Written and wired up, but never executed. These need the kernel build, which tak
 | There is no swap | `swapon --show` is empty and `zramctl` lists nothing | not run |
 | Installer is non-destructive | QEMU with a populated fake array; the eight disks are checksummed in-guest before and after | assertion written |
 | Installer refuses blanks by default | QEMU with empty disks, `--apply`, expecting a refusal, exit 2, and disks unchanged | assertion written — runs with `--apply` deliberately, so the refusal is the only thing preventing a write |
+| The kernel installs from the medium with apt | QEMU install test: `/lib/modules/<release>` appears in the target, the staged `.deb`s are cleaned up again, the target's cmdline carries a real UUID, the postinst trigger is installed, and the UKI on the ESP came from the package's postinst rather than from the installer | assertion written |
+| A kernel upgrade on the installed machine rebuilds the UKI | Install a second, newer pair of `.deb`s on the target and watch `kernel-install` produce a new UKI, the fallback copy follow it, and retention keep the old one | not run — and this is the half of the design that the package delivery exists for |
 | CI reproduces | Workflow run on the self-hosted runner produces a byte-comparable ISO | **see below** |
 
 On the last row: a byte-comparable ISO is not currently achievable and the claim should be weakened rather than quietly kept. `mksquashfs -all-time` and `xorriso -volume_date` pin the timestamps that are under this repository's control, but the kernel build embeds a build ID and its own timestamps, so two kernel builds produce different `.deb`s and everything downstream inherits that. The workflow proves the ISO *builds* reproducibly from a given kernel; it does not prove the kernel is reproducible. Making that true is a separate piece of work.
@@ -302,13 +312,23 @@ Decisions the design did not cover, or where implementing it changed the shape o
 
 **Two rootfs images, not one.** The design has a single rootfs that gets "stripped of live-only state" at install time. There are two images instead — `live` (the installer's operating system) and `installed` (minimal server + Docker) — because stripping during install makes the destructive step also the complicated one, and because `data/packages/{live,installed}.list` only means something if both are built. The installer stays a copy operation. The installed image travels on the ISO as the installer's *payload*; the two words describe one artifact from two directions, and `ubuntu_uki_iso/build/rootfs.py` says so.
 
+**The kernel reaches the target as a package.** The payload rootfs is built without a kernel. The medium carries the `linux-image` and `linux-headers` `.deb`s that `make bindeb-pkg` produces, and the installer installs them with `apt-get` inside a chroot on the target. The reason is the one the whole project is about: an install that copies a kernel in, and an upgrade that installs one, are two different mechanisms, and only the second is ever exercised again. Doing it this way means the machine's first kernel upgrade is the one that installed it.
+
+Two consequences are accepted deliberately. The install stops being a copy operation — it is a package install that builds an initramfs, so minutes rather than seconds. And apt has to resolve the package's dependencies from the payload alone, with no package lists and no network, which is a real risk: a missing dependency would surface on the target, after partitioning, with the disk already formatted. So it is checked at build time instead, by `verify_packages_resolve` in `build/hooks/installed.py`, which simulates the install inside the built rootfs and fails the build if apt would have to fetch anything. The QEMU install test is what proves the real thing behaves the same way.
+
+**Nothing on a stock Ubuntu system calls `kernel-install`.** The kernel packages `make bindeb-pkg` produces have maintainer scripts that do exactly one thing: `run-parts` over `/etc/kernel/postinst.d` and `/etc/kernel/postrm.d`. They do not call `kernel-install`, and neither does anything else on the machine — the package that would, `systemd-boot`, is deliberately not installed, because this design has no bootloader. Checked rather than assumed: on the build host `/etc/kernel/postinst.d` holds dracut, kdump-tools, unattended-upgrades, update-notifier, xx-update-initrd-links, zz-shim and zz-update-grub, and not one of them mentions `kernel-install`.
+
+So the installed image carries its own: `/etc/kernel/postinst.d/zz-ubuntu-uki-iso` calls `kernel-install add` with the release and the image path `run-parts` hands it, and the matching hook in `postrm.d` calls `kernel-install remove`. That is what makes the `install.d` plugins run at all — they are a chain, not alternatives. The boot root is set to `settings.ESP_MOUNT` rather than left to `kernel-install`'s autodetection, which on a machine with more than one ESP is a guess, and it is the guess that decides whether the machine boots.
+
+Without this the failure would have been silent: the kernel package installs, dracut leaves a working initramfs in `/boot`, and no UKI is ever built — so the firmware goes on booting whatever UKI was there before, which on a fresh install is nothing.
+
 **The reuse path mounts read-only, with `norecovery`.** The design says "ASSEMBLE + mount RW, never write superblocks". Mounting RW is itself a write: ext4 updates the superblock's mount count and last-mounted time, and a plain `mount -o ro` still replays the journal. The verification mount is therefore `-o ro,norecovery`, which genuinely touches nothing. The installed system mounts the array read-write at boot, as normal.
 
 **QEMU-relevant drivers are kept.** The trim disables non-Intel Ethernet and everything under DRM except nouveau, but keeps `VIRTIO_BLK`, `VIRTIO_NET`, `SCSI_VIRTIO`, `E1000`/`E1000E`, `ATA_PIIX` and `ATA_GENERIC`. Without them the ISO cannot be tested in a VM, and an untestable image is the thing this project exists to avoid. They are small and the comments say why.
 
 **The installed command line is a template.** `data/cmdline/installed` carries `root=UUID=@@ROOT_UUID@@` because the real UUID does not exist until the installer has partitioned the disk. `ubuntu_uki_iso/installer/target.py` substitutes it and then *verifies* no `@@` survives, and `ubuntu_uki_iso/installer/uki.py` reads the value back out of the finished UKI's `.cmdline` section. A UKI carrying the placeholder builds fine and panics at boot; that is worth three checks.
 
-**`--bless` is gated on evidence.** The design says `\EFI\BOOT\BOOTX64.EFI` is updated only after the new UKI has booted successfully, but does not say how that is known. A systemd unit in the installed image writes the running kernel release to `/var/lib/xiahualab/booted`, and `--bless` refuses unless that file names the kernel currently running. The original loader is copied to `BOOTX64.EFI.ubuntu-uki-iso-orig` exactly once, so a second run cannot destroy the only known-good copy.
+**`--bless` is gated on evidence.** The design says `\EFI\BOOT\BOOTX64.EFI` is updated only after the new UKI has booted successfully, but does not say how that is known. A systemd unit in the installed image writes the running kernel release to `/var/lib/xiahualab/booted`, and `--bless` refuses unless that file names the kernel currently running. The original loader is copied to `BOOTX64.EFI.pre-ubuntu-uki-iso` exactly once, so a second run cannot destroy the only known-good copy.
 
 **VM tests use QEMU file-backed disks, not host loop devices.** The design says "loop-backed disks, never real ones". Files are used instead, presented to the guest through QEMU's NVMe and AHCI emulation, so the guest sees `/dev/nvme0n1` and `/dev/sd[a-h]` exactly as the real machine does — while the host never creates a block device the installer could be pointed at by mistake. Disk images live under `out/vm/` and are the only storage any test can reach.
 
@@ -348,9 +368,9 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 ubuntu-uki-iso verify                    # seconds, offline — the guard checks
 ubuntu-uki-iso doctor                    # ~2 min — validates the trim before spending 45 on it
-ubuntu-uki-iso build kernel              # ~45 min with debug info
+ubuntu-uki-iso build kernel              # ~45 min; leaves the .debs in out/kernel/
 ubuntu-uki-iso build kernel --no-debug-info   # a fraction of that, for iterating
-ubuntu-uki-iso build iso                 # rootfs, UKI, squashfs, xorriso
+ubuntu-uki-iso build all                 # rootfs, UKI, squashfs, xorriso
 ubuntu-uki-iso test unit                 # pytest
 ubuntu-uki-iso test vm                   # QEMU, opt-in and slow (this host has no KVM)
 ```
@@ -363,9 +383,10 @@ Every build step runs in a container; nothing needs sudo on the host, and the co
 
 - **The RAID array.** Mitigated by dry-run-by-default, preflight scanning, typed confirmation, and testing exclusively against virtual disks. The real `/dev/sd{a..h}` are never a test target. The build container is not `--privileged` and does not mount `/dev`, so no build script can reach the array either — the protection is not only procedural.
 - **Docker silently broken by the kernel trim.** Mitigated by the never-disable list and an explicit `docker network create` test, which exercises netfilter rather than just the daemon. The same list covers anything else the project depends on — see the SCSI_VIRTIO note under implementation notes, which is what that framing came from.
-- **Python on the boot path.** The kernel-install plugins are Python, so `python3-minimal` is a dependency of the installed system. That puts an interpreter on the kernel-upgrade path — if it were ever broken or removed mid-upgrade, the plugins would fail. The plugins are written to exit 0 on anything they do not understand rather than failing a kernel install, and the fallback copy is verified by size after writing, but this is a real cost of the language choice and was accepted knowingly.
+- **Python on the boot path.** The kernel-install plugins and the postinst hook that triggers them are Python, so `python3-minimal` is a dependency of the installed system. That puts an interpreter on the kernel-upgrade path — and, since the hook runs *during* the package install, on the package-install path too: a broken interpreter fails the kernel install rather than quietly leaving the UKI unbuilt. That is the deliberate direction (the alternative is a machine that believes it has a new kernel and boots the old one), but it does mean an interpreter problem becomes a dpkg problem. The plugins themselves are written to exit 0 on anything they do not understand rather than failing a kernel install, and the fallback copy is verified by size after writing.
 - **dracut live-boot cmdline.** The `rd.live.*` keys are the least certain part of this design.
-- **ESP exhaustion.** 1 GB holds ~10–15 UKIs, so retention is not optional. Implemented as a kernel-install plugin (`config/ukis/`) that runs after `90-uki-copy.install`, keeps 3, prunes oldest, and refuses to remove either the UKI of the running kernel or the one just installed. The "just installed" protection is the one that matters, because this runs at exactly the moment when the running kernel is the *old* one and the new UKI is the one that must survive.
+- **ESP exhaustion.** 1 GB holds ~10–15 UKIs, so retention is not optional. Implemented as a kernel-install plugin (`ubuntu_uki_iso/ukis/retention.py`) that runs after `90-uki-copy.install`, keeps 3, prunes oldest, and refuses to remove either the UKI of the running kernel or the one just installed. The "just installed" protection is the one that matters, because this runs at exactly the moment when the running kernel is the *old* one and the new UKI is the one that must survive.
+- **The kernel install needs no network, and has to keep not needing it.** The payload carries no kernel, so `apt-get install` on the target is the step that could reach for the archive. It is checked at build time by simulating the install inside the built payload, and the build fails if apt would have to fetch anything — but the simulation is apt in a container, not apt on the target. The QEMU install test is what closes that gap; until it has run, the check is a strong argument rather than a proof.
 - **Unsigned UKI + future Secure Boot.** Booting is fine today (SB disabled). Enabling it later requires enrolling keys; `sbsign` is in the build image so the UKI can be signed when needed, but no key ceremony is designed here.
 - **Self-hosted runner trust.** A runner on this box executes repo workflows with access to the RAID0 data. Keep the repo private, or restrict which workflows may run.
 

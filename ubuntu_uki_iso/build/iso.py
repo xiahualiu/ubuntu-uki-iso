@@ -7,6 +7,7 @@ Layout produced::
                               and appended as a GPT EFI System Partition
     /live/filesystem.squashfs the live environment
     /payload/rootfs.squashfs  the system the installer writes to disk
+    /payload/debs/*.deb       the kernel the installer installs onto it
 
 No BIOS boot, no isolinux, no El Torito emulation. Every target is UEFI.
 
@@ -20,15 +21,20 @@ all.
 An image with the first and not the second builds cleanly, boots in a VM with
 ``-cdrom``, and is a coaster on a USB stick. Both are therefore checked, and
 both are fatal.
+
+The payload is checked the same way and for the same reason. An ISO that boots
+and then has nothing to install fails on the target, after partitioning, with
+the disk already formatted — so what the medium must carry is gated here.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
-from .. import gpt, settings
+from .. import gpt, paths, settings
 from ..errors import BuildError
 from ..log import Console, get_console
 from ..paths import Layout
@@ -215,13 +221,43 @@ def _verify_gpt(layout: Layout, console: Console) -> None:
     console.info(f"GPT: EFI System Partition present, {esp.size_mb} MB (USB)")
 
 
+def _stage_kernel_debs(layout: Layout, console: Console) -> None:
+    """Put the kernel packages on the medium, beside the payload.
+
+    The target installs these rather than having a kernel copied onto it, which
+    is what makes a later kernel upgrade on that machine the same operation as
+    the install was. They sit next to the payload because everything the
+    installer consumes from the medium is in one directory.
+    """
+    destination = layout.iso_stage / paths.PAYLOAD_DEBS
+    destination.mkdir(parents=True, exist_ok=True)
+    for deb in layout.kernel_debs():
+        shutil.copyfile(deb, destination / deb.name)
+        console.info(f"payload: {paths.PAYLOAD_DEBS}/{deb.name}")
+
+
 def build(layout: Layout, console: Console, runner: Runner) -> Path:
-    if not (layout.iso_stage / "live/filesystem.squashfs").is_file():
+    """Gate what the medium must carry, then burn it.
+
+    The gates are on the *staging tree*, which is what xorriso is handed: a file
+    missing from it is a file missing from the ISO. What they exist to catch is
+    the failure that otherwise waits for the target — an ISO that boots and then
+    has nothing to install onto the machine.
+    """
+    if not (layout.iso_stage / paths.LIVE_SQUASHFS).is_file():
         raise BuildError(
             f"no live squashfs under {layout.iso_stage}. Run `ubuntu-uki-iso build squashfs` first."
         )
+    if not (layout.iso_stage / paths.PAYLOAD_SQUASHFS).is_file():
+        raise BuildError(
+            f"no installation payload at {layout.iso_stage / paths.PAYLOAD_SQUASHFS}.\n"
+            "Without it the ISO boots and then has no root filesystem to write to\n"
+            "the target. Run `ubuntu-uki-iso build squashfs` first."
+        )
     if not layout.uki_file.is_file():
         raise BuildError(f"no UKI at {layout.uki_file}. Run `ubuntu-uki-iso build uki` first.")
+
+    _stage_kernel_debs(layout, console)
 
     _run_xorriso(layout, _build_efi_image(layout, console, runner), console, runner)
     _verify(layout, console, runner)

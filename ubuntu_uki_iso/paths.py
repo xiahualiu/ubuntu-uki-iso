@@ -16,6 +16,23 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+# ---------------------------------------------------------------------------
+# The installation medium's own layout
+# ---------------------------------------------------------------------------
+
+#: One spelling for the paths that the build writes into the ISO and the
+#: installer looks for on the medium. Two modules have to agree on every one of
+#: them, and a disagreement is an ISO that boots, installs nothing, and says so
+#: only after the target disk has been formatted.
+LIVE_SQUASHFS = Path("live/filesystem.squashfs")
+PAYLOAD_SQUASHFS = Path("payload/rootfs.squashfs")
+
+#: The kernel packages the installer installs on the target, beside the payload
+#: rather than inside it: the payload is unsquashed verbatim, while these are
+#: handed to the package manager on the target. That is what makes a future
+#: kernel update there the same operation as the install was.
+PAYLOAD_DEBS = Path("payload/debs")
+
 
 def data_dir() -> Path:
     """Packaged configuration data (fragments, lists, templates)."""
@@ -85,6 +102,34 @@ class Layout:
         read by everything downstream.
         """
         return self.kernel / "release"
+
+    def kernel_debs(self) -> tuple[Path, Path]:
+        """The kernel image and headers packages, as built.
+
+        Both go to the target: the image carries the kernel and its modules,
+        and the headers match it exactly, which Docker and any future DKMS
+        module need. Deliberately absent is the ``-dbg`` package — hundreds of
+        megabytes that nothing here consumes.
+
+        One implementation, because three callers need the same pair: the live
+        rootfs installs them, the installed rootfs checks that they resolve, and
+        the ISO carries them for the target to install.
+        """
+        from .errors import BuildError
+
+        found = []
+        for pattern, what in (
+            ("linux-image-*.deb", "image"),
+            ("linux-headers-*.deb", "headers"),
+        ):
+            candidates = [p for p in sorted(self.kernel.glob(pattern)) if "-dbg_" not in p.name]
+            if not candidates:
+                raise BuildError(
+                    f"no kernel {what} .deb in {self.kernel}.\n"
+                    "Run `ubuntu-uki-iso build kernel` first."
+                )
+            found.append(candidates[-1])
+        return found[0], found[1]
 
     # -- rootfs ------------------------------------------------------------
 

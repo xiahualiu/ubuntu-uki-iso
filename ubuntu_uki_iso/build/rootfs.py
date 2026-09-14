@@ -4,9 +4,14 @@
 dpkg/apt system; everything else is named explicitly. Recommends are off,
 because that is how a "minimal server" quietly acquires a desktop stack.
 
-Both images get the same kernel — the same ``.deb``, built once — which is what
-makes live boot a rehearsal of the target rather than a separate environment
-that can drift.
+The two images differ in one large way. The live image installs the custom
+kernel, because the ISO's own UKI is built from it. The installed image has no
+kernel at all: the target gets one by installing the packages the medium
+carries, which is the same operation as a kernel upgrade on that machine.
+
+Both still need the kernel build to have happened — the live image to install
+the packages, the installed image so that its hook can prove they resolve
+against it.
 """
 
 from __future__ import annotations
@@ -93,9 +98,10 @@ def main(argv: list[str] | None = None) -> int:
     runner.require("mmdebstrap", "chroot")
     layout.require_dirs()
 
-    # Both hooks need the kernel release and the .debs, so the kernel build has
-    # to have happened. Checked here rather than inside the hook, where the
-    # failure surfaces as a mmdebstrap error with no context.
+    # Both hooks need the built packages — the live one to install them, the
+    # installed one to prove they resolve — so the kernel build has to have
+    # happened either way. Checked here rather than inside a hook, where the
+    # failure would surface as a mmdebstrap error with no context.
     release = layout.kernel_release()
     console.info(f"kernel: {release}")
 

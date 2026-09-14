@@ -16,30 +16,6 @@ from pathlib import Path
 
 from ...errors import BuildError
 from ...log import Console
-from ...paths import Layout
-
-
-def image_deb(layout: Layout) -> Path:
-    """The custom kernel's linux-image .deb."""
-    return _deb(layout, "linux-image-*.deb", "the kernel image")
-
-
-def headers_deb(layout: Layout) -> Path:
-    """The matching linux-headers .deb.
-
-    Docker and any future DKMS module need headers that match the running
-    kernel exactly, which is why both are built and both are installed.
-    """
-    return _deb(layout, "linux-headers-*.deb", "the kernel headers")
-
-
-def _deb(layout: Layout, pattern: str, what: str) -> Path:
-    candidates = sorted(layout.kernel.glob(pattern))
-    if not candidates:
-        raise BuildError(
-            f"no {what} .deb in {layout.kernel}.\nRun `ubuntu-uki-iso build kernel` first."
-        )
-    return candidates[-1]
 
 
 def write_file(path: Path, content: str, mode: int = 0o644) -> None:
@@ -60,12 +36,18 @@ def chroot(
     env: dict[str, str] | None = None,
     check: bool = True,
     quiet: bool = False,
+    capture: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run a command inside the target.
 
     ``DEBIAN_FRONTEND=noninteractive`` is set for every call: a maintainer
     script that decides to ask a question would otherwise hang the build with
     no output and no indication of why.
+
+    ``capture`` is for the few calls whose *output* is the answer rather than
+    their exit code — apt's dependency resolution, for one. It merges stderr
+    into stdout, because apt explains itself on stderr and the explanation is
+    the part worth quoting back.
     """
     environment = {
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -74,11 +56,19 @@ def chroot(
     }
     environment.update(env or {})
 
+    if capture:
+        stdout: int | None = subprocess.PIPE
+    elif quiet:
+        stdout = subprocess.DEVNULL
+    else:
+        stdout = None
+
     proc = subprocess.run(
         ["chroot", str(root), *argv],
         env=environment,
         check=False,
-        stdout=subprocess.DEVNULL if quiet else None,
+        stdout=stdout,
+        stderr=subprocess.STDOUT if capture else None,
     )
     if check and proc.returncode != 0:
         raise BuildError(f"chroot {root}: {' '.join(argv)} failed ({proc.returncode})")

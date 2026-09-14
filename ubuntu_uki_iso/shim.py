@@ -7,10 +7,16 @@ that directory on ``sys.path`` and call into it.
 
 Why shims rather than copying a self-contained script per entry point: the
 logic stays in one importable, testable place, and the thing sitting in
-``/etc/kernel/install.d/`` is small enough to read in full. The cost is that
-the target needs the package present, which the rootfs build guarantees — and
-which :func:`verify_installed` re-checks on the built image rather than
-assuming.
+``/etc/kernel/install.d/`` — or in ``/etc/kernel/postinst.d/`` — is small enough
+to read in full. The cost is that the target needs the package present, which
+the rootfs build guarantees, and which the installer re-checks before it needs
+it (:func:`ubuntu_uki_iso.installer.uki.run`) rather than assuming.
+
+There are two kinds of entry point here, and they are a chain rather than
+alternatives. The **install.d plugins** run when kernel-install runs. The
+**package hooks** in ``postinst.d`` and ``postrm.d`` are what make kernel-install
+run at all when a kernel package is installed or removed — see
+:mod:`ubuntu_uki_iso.ukis.trigger` for why nothing else does.
 """
 
 from __future__ import annotations
@@ -34,19 +40,19 @@ import sys
 
 sys.path.insert(0, {lib!r})
 
-from {module} import main  # noqa: E402
+from {module} import {function}  # noqa: E402
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit({function}())
 '''
 
 
-def render_shim(module: str, description: str) -> str:
-    """A standalone executable that calls ``<module>.main()``."""
-    return _SHIM.format(module=module, description=description, lib=TARGET_LIB)
+def render_shim(module: str, description: str, function: str = "main") -> str:
+    """A standalone executable that calls ``<module>.<function>()``."""
+    return _SHIM.format(module=module, description=description, lib=TARGET_LIB, function=function)
 
 
-def write_shim(path: Path, module: str, description: str) -> Path:
+def write_shim(path: Path, module: str, description: str, function: str = "main") -> Path:
     """Write a shim and make it executable.
 
     Mode 0755 explicitly: these run from kernel-install and from the live
@@ -54,7 +60,7 @@ def write_shim(path: Path, module: str, description: str) -> Path:
     found", which points nowhere useful.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_shim(module, description), encoding="utf-8")
+    path.write_text(render_shim(module, description, function), encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -86,4 +92,45 @@ def install_kernel_install_plugins(root: Path) -> list[Path]:
     plugin_dir = root / "etc/kernel/install.d"
     for filename, module, description in KERNEL_INSTALL_PLUGINS:
         written.append(write_shim(plugin_dir / filename, module, description))
+    return written
+
+
+#: The hooks that make a kernel *package* install run kernel-install at all, as
+#: (directory, filename, function, description).
+#:
+#: The plugins above only run once kernel-install is called, and nothing on a
+#: stock Ubuntu system calls it — see :mod:`ubuntu_uki_iso.ukis.trigger`. Without
+#: these, a kernel upgrade installs a kernel and builds no UKI.
+#:
+#: ``zz-`` so they run after the distribution's own hooks, following the
+#: convention that the last word on the boot path goes to the thing that owns
+#: it.
+KERNEL_PACKAGE_HOOKS: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "postinst.d",
+        "zz-ubuntu-uki-iso",
+        "postinst_main",
+        "Build the UKI when a kernel image is installed.",
+    ),
+    (
+        "postrm.d",
+        "zz-ubuntu-uki-iso",
+        "postrm_main",
+        "Remove the UKI when a kernel image is removed.",
+    ),
+)
+
+
+def install_kernel_package_hooks(root: Path) -> list[Path]:
+    """Write the postinst and postrm hooks into ``root``."""
+    written = []
+    for directory, filename, function, description in KERNEL_PACKAGE_HOOKS:
+        written.append(
+            write_shim(
+                root / f"etc/kernel/{directory}" / filename,
+                "ubuntu_uki_iso.ukis.trigger",
+                description,
+                function,
+            )
+        )
     return written

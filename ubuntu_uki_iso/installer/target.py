@@ -16,14 +16,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .. import settings
+from .. import paths, settings
 from ..config import boot
 from ..errors import BuildError
 from . import device
 from .context import Context
-
-#: Where the payload squashfs lives on the installation medium.
-PAYLOAD_RELPATH = "payload/rootfs.squashfs"
 
 #: Where a live medium turns up, in the order worth trying.
 MEDIUM_CANDIDATES = (
@@ -36,52 +33,86 @@ MEDIUM_CANDIDATES = (
 
 
 def find_payload(ctx: Context) -> None:
-    """Locate the payload squashfs on the installation medium.
+    """Locate what the installer consumes on the medium.
+
+    That is two things now: the payload squashfs, and the kernel packages that
+    travel beside it. They are found together because they come from the same
+    place — the ISO's ``/payload`` directory — and because an install needs both.
 
     dracut may have mounted the medium at any of several places depending on
     version and on whether systemd drove it, so this looks for the volume label
     first and falls back to searching the usual mount points — rather than
     guessing one path and being wrong.
 
-    A dry run tolerates not finding it, because the point of a dry run is often
-    to check the plan before going near the machine. An apply run has no such
-    excuse: without the payload there is nothing to install.
+    A dry run tolerates not finding either, because the point of a dry run is
+    often to check the plan before going near the machine. An apply run has no
+    such excuse.
     """
     if ctx.payload is not None:
         if not ctx.payload.is_file():
             raise BuildError(f"--payload {ctx.payload} does not exist")
-        return
+    else:
+        located = _search_medium(ctx)
+        if located is None:
+            if not ctx.dry_run:
+                raise BuildError(
+                    f"could not find the installation payload ({paths.PAYLOAD_SQUASHFS}).\n"
+                    f"Looked for volume label {settings.VOLID!r} and under "
+                    f"{', '.join(MEDIUM_CANDIDATES)}.\n"
+                    "Pass --payload /path/to/rootfs.squashfs if it is somewhere else."
+                )
+            ctx.console.warn("no installation payload found; the plan below names a placeholder")
+            located = Path("<medium>") / paths.PAYLOAD_SQUASHFS
+        ctx.payload = located
 
+    _find_debs(ctx, ctx.payload)
+
+
+def _search_medium(ctx: Context) -> Path | None:
+    """The payload squashfs, found by volume label or by looking around."""
     source = ctx.runner.capture("blkid", "-L", settings.VOLID, check=False)
     if source:
         mount = ctx.runner.capture("findmnt", "-n", "-o", "TARGET", "--source", source, check=False)
         mountpoint = mount.splitlines()[0].strip() if mount else ""
         if mountpoint:
-            candidate = Path(mountpoint) / PAYLOAD_RELPATH
+            candidate = Path(mountpoint) / paths.PAYLOAD_SQUASHFS
             if candidate.is_file():
-                ctx.payload = candidate
-                return
+                return candidate
 
     for base in MEDIUM_CANDIDATES:
         # /media and /mnt hold one directory per mounted medium; the rest are
         # mount points themselves.
         candidates = sorted(Path(base).glob("*")) if base in ("/media", "/mnt") else [Path(base)]
         for candidate in candidates:
-            path = candidate / PAYLOAD_RELPATH
+            path = candidate / paths.PAYLOAD_SQUASHFS
             if path.is_file():
-                ctx.payload = path
-                return
+                return path
+    return None
+
+
+def _find_debs(ctx: Context, payload: Path) -> None:
+    """The kernel packages that travel beside the payload.
+
+    There is no kernel in the payload: the target gets one by installing these,
+    which is the same operation as a future kernel upgrade on that machine. An
+    install that cannot find them produces a machine that boots nothing, which
+    is worth saying before the disk is formatted rather than after.
+    """
+    directory = payload.parent / paths.PAYLOAD_DEBS.name
+    debs = sorted(directory.glob("*.deb"))
+    if debs:
+        ctx.debs = debs
+        return
 
     if ctx.dry_run:
-        ctx.console.warn("no installation payload found; the plan below names a placeholder")
-        ctx.payload = Path("<medium>") / PAYLOAD_RELPATH
+        ctx.console.warn(f"no kernel packages in {directory}; the plan below assumes they exist")
         return
 
     raise BuildError(
-        f"could not find the installation payload ({PAYLOAD_RELPATH}).\n"
-        f"Looked for volume label {settings.VOLID!r} and under "
-        f"{', '.join(MEDIUM_CANDIDATES)}.\n"
-        "Pass --payload /path/to/rootfs.squashfs if it is somewhere else."
+        f"no kernel packages in {directory}.\n"
+        "The payload carries no kernel: the target gets one by installing the\n"
+        "packages off the medium, the same way a kernel upgrade there will. Without\n"
+        "them the install produces a machine that cannot boot."
     )
 
 
@@ -131,8 +162,12 @@ def run(ctx: Context) -> None:
 
     ctx.load_release()
     if not ctx.release:
-        raise BuildError("no kernel modules in the payload — it carries no kernel")
-    console.info(f"kernel: {ctx.release}")
+        raise BuildError(
+            "no kernel release could be derived from the packages on the medium.\n"
+            "The next step installs them with apt, and kernel-install names the UKI\n"
+            "after the release, so there is nothing to do without it."
+        )
+    console.info(f"kernel: {ctx.release} (from {ctx.image_deb})")
 
     _write_fstab(ctx)
     _write_cmdline(ctx)
@@ -155,7 +190,11 @@ def _write_fstab(ctx: Context) -> None:
         "# nofail that turns a disk failure into a machine that will not boot.",
         "",
         f"UUID={ctx.root_uuid:<40} /         ext4  defaults        0 1",
-        f"UUID={ctx.esp_uuid:<40} /boot/efi vfat  umask=0077      0 1",
+        # The mount point is a setting rather than a literal here, because the
+        # kernel package's postinst hook points kernel-install's boot root at
+        # the same path. Two spellings that drift apart produce a UKI the
+        # firmware never looks at.
+        f"UUID={ctx.esp_uuid:<40} {settings.ESP_MOUNT:<9} vfat  umask=0077      0 1",
     ]
     if ctx.data_uuid:
         lines.append(f"UUID={ctx.data_uuid:<40} /mnt/raid0 ext4  defaults,nofail 0 2")
@@ -168,7 +207,7 @@ def _write_fstab(ctx: Context) -> None:
     ]
 
     (ctx.target / "etc/fstab").write_text("\n".join(lines), encoding="utf-8")
-    for directory in ("mnt/raid0", "boot/efi"):
+    for directory in ("mnt/raid0", settings.ESP_MOUNT.lstrip("/")):
         (ctx.target / directory).mkdir(parents=True, exist_ok=True)
 
     ctx.console.info("fstab:")

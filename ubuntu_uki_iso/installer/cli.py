@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from .. import settings
 from ..errors import Refusal, XiahualabError
@@ -61,7 +62,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         help="reuse the existing array (default), create a new one, or none",
     )
     parser.add_argument(
-        "--payload", metavar="PATH", help="Rootfs squashfs to install. Autodetected on the ISO."
+        "--payload",
+        metavar="PATH",
+        help="Rootfs squashfs to install. Autodetected on the ISO, which also "
+        "carries the kernel packages in a debs/ directory beside it.",
     )
     parser.add_argument(
         "--esp-size", default="1G", metavar="SIZE", help="EFI System Partition size (default 1G)"
@@ -140,7 +144,8 @@ def _print_plan(ctx: Context, preflight_result: preflight.Preflight) -> None:
     console.info(f"root: partition {ctx.root_disk} (GPT: ESP {ctx.esp_size} + root)")
     console.info("      format the root filesystem ext4")
     console.info(f"      write the payload onto it: {ctx.payload}")
-    console.info("      generate the UKI with the target's real root UUID")
+    kernel = ctx.release or "<release>"
+    console.info(f"      install the kernel package ({kernel}) — it builds its own UKI")
     console.info("boot: write \\EFI\\BOOT\\BOOTX64.EFI and create a firmware entry")
 
 
@@ -192,10 +197,12 @@ def install(args: argparse.Namespace, console: Console) -> int:
         "mdadm",
         "sgdisk",
         "mkfs.ext4",
+        "mkfs.vfat",
         "mount",
         "umount",
         "unsquashfs",
         "chroot",
+        "dpkg-deb",
     )
 
     layout = Layout()
@@ -209,10 +216,13 @@ def install(args: argparse.Namespace, console: Console) -> int:
         esp_size=args.esp_size,
         md_device=settings.MD_DEVICE,
         force_root_disk=args.force_root_disk,
+        payload=Path(args.payload) if args.payload else None,
     )
 
-    # Read-only, and before the plan, so the plan names a real file.
+    # Read-only, and before the plan, so the plan names a real file and a real
+    # kernel rather than a placeholder.
     target.find_payload(ctx)
+    ctx.load_release()
 
     result = preflight.scan(runner, data_disks or [])
     preflight.report(result, runner, args.root_disk, console)

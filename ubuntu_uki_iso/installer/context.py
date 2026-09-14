@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..errors import BuildError
 from ..log import Console
 from ..paths import Layout
 from ..proc import Runner
@@ -23,6 +24,10 @@ TARGET_MOUNT = Path("/mnt/ubuntu-uki-iso-target")
 
 #: Where the existing array is mounted, read-only, to prove it is readable.
 RAID_VERIFY_MOUNT = Path("/mnt/ubuntu-uki-iso-raid-check")
+
+#: The kernel image package's name prefix. What follows it is the kernel
+#: release, which is the string every other part of the system keys off.
+IMAGE_PACKAGE_PREFIX = "linux-image-"
 
 
 @dataclass
@@ -36,6 +41,9 @@ class Context:
     esp_size: str = "1G"
     md_device: str = "/dev/md0"
     payload: Path | None = None
+    #: The kernel packages found on the medium, beside the payload. Empty only
+    #: in a dry run whose medium was not found.
+    debs: list[Path] = field(default_factory=list)
     force_root_disk: bool = False
 
     # -- filled in by the steps --------------------------------------------
@@ -70,20 +78,35 @@ class Context:
         self.part_esp = device.part_name(self.root_disk, 1)
         self.part_root = device.part_name(self.root_disk, 2)
 
-    def load_release(self) -> str:
-        """The kernel release the payload carries.
+    @property
+    def image_deb(self) -> Path | None:
+        """The kernel image package among those found on the medium."""
+        for deb in self.debs:
+            if deb.name.startswith(IMAGE_PACKAGE_PREFIX):
+                return deb
+        return None
 
-        Read from what actually landed on disk rather than passed in: the
-        payload is the authority on which kernel it contains, and deriving it
-        here makes a mismatch impossible.
+    def load_release(self) -> str:
+        """The kernel release the packages on the medium will install.
+
+        Read out of the image package's control metadata rather than from its
+        file name or from a directory listing. The name is a convention
+        bindeb-pkg happens to follow; ``Package:`` is what dpkg records and what
+        the installed system will answer to. The payload carries no kernel any
+        more, so the package is the only authority on which kernel this machine
+        is about to run.
         """
-        modules = self.target / "lib/modules"
-        if not modules.is_dir():
+        image = self.image_deb
+        if image is None:
             return ""
-        versions = sorted(p.name for p in modules.iterdir() if p.is_dir())
-        if not versions:
-            return ""
-        self.release = versions[-1]
+
+        package = self.runner.capture("dpkg-deb", "-f", str(image), "Package")
+        if not package.startswith(IMAGE_PACKAGE_PREFIX):
+            raise BuildError(
+                f"{image.name} is not a kernel image package: it calls itself {package!r}.\n"
+                f"The release is what follows {IMAGE_PACKAGE_PREFIX!r}, so it cannot be derived."
+            )
+        self.release = package[len(IMAGE_PACKAGE_PREFIX) :]
         return self.release
 
 

@@ -20,8 +20,6 @@ from ...paths import Layout
 from .common import (
     chroot,
     cleanup,
-    headers_deb,
-    image_deb,
     install_debs,
     install_file,
     install_python_package,
@@ -57,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     release = layout.kernel_release()
 
     console.step(f"  hook(live): install kernel {release}")
-    install_debs(target, [image_deb(layout), headers_deb(layout)])
+    install_debs(target, list(layout.kernel_debs()))
     verify_kernel_installed(target, release)
     console.info(f"  kernel {release} installed")
 

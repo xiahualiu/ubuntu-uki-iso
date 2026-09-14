@@ -26,6 +26,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .. import settings
 from ..log import Console, get_console
 
 #: The firmware's default path, relative to the boot root.
@@ -151,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     if verb != "add":
         return 0
 
-    boot_root = Path(os.environ.get("KERNEL_INSTALL_BOOT_ROOT", "/boot/efi"))
+    boot_root = Path(os.environ.get("KERNEL_INSTALL_BOOT_ROOT", settings.ESP_MOUNT))
 
     try:
         installed = install(boot_root, kernel_version, console=console)

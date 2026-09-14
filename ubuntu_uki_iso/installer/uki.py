@@ -1,28 +1,40 @@
-"""Generate the UKI on the target and put it on the ESP.
+"""Install the kernel on the target, and let it build its own UKI.
 
-This runs ``kernel-install`` *inside the installed system*, in a chroot, on the
-real hardware. Two consequences, and they are the whole point:
+This step does not build a UKI. It installs the kernel packages the medium
+carries — with apt, in a chroot — and the package's own maintainer scripts run
+``kernel-install``, which with ``layout=uki`` runs dracut and ukify and writes
+the UKI to the ESP. Three consequences, and they are the whole point:
 
-* the initramfs is host-only, so dracut includes the drivers this machine
-  actually needs to find its own root filesystem
-* the UKI is assembled by the same path that will assemble it on every future
-  kernel upgrade, so that mechanism is exercised now rather than discovered
-  later
+* the initramfs is host-only, because dracut runs here on the real hardware and
+  includes exactly the drivers this machine needs to find its own root
+  filesystem
+* the install *is* a kernel upgrade. The first one on this machine is the one
+  that installed it, so the mechanism that will run on every future upgrade has
+  been exercised before there is anything to lose
+* the machine can be given a new kernel later by handing it a newer pair of
+  packages, with no installer and no ISO involved
 
 The ESP is formatted here, which destroys whatever loader was on it — on this
-machine, shim and GRUB. After that, the only ways to boot are the NVRAM entry
-and ``\\EFI\\BOOT\\BOOTX64.EFI``. The kernel-install plugin
-(:mod:`ubuntu_uki_iso.ukis.fallback`) writes the second one as part of this step, so
-the machine is bootable before the firmware entry even exists.
+machine, shim and GRUB. After that the only ways to boot are the NVRAM entry and
+``\\EFI\\BOOT\\BOOTX64.EFI``. The kernel-install plugin
+(:mod:`ubuntu_uki_iso.ukis.fallback`) writes the second one as part of the
+package install, so the machine is bootable before the firmware entry even
+exists.
 """
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from .. import pe, settings
 from ..errors import BuildError
 from .context import Context
+
+#: Where the packages are staged inside the target for apt to install. Under
+#: /var/tmp because that is where a package manager's scratch belongs, and
+#: because a failed run leaving files there is obvious rather than subtle.
+DEB_STAGING = Path("var/tmp/kernel-debs")
 
 
 def run(ctx: Context) -> None:
@@ -47,16 +59,18 @@ def run(ctx: Context) -> None:
         # name the firmware entry — and a dry run is the default, so that would
         # be the only behaviour anyone ever saw.
         ctx.uki_rel = settings.FALLBACK_EFI_PATH
-        release = ctx.release or "<release>"
-        console.grey(f"would chroot {ctx.target} and run:")
-        console.grey(f"  kernel-install add {release} /boot/vmlinuz-{release}")
-        console.grey("  -> dracut builds the initramfs, ukify builds the UKI,")
-        console.grey("     90-uki-copy.install places it at /EFI/Linux/")
+        packages = ", ".join(deb.name for deb in ctx.debs) or "<the kernel packages>"
+        console.grey(f"would copy into {ctx.target}: {packages}")
+        console.grey(f"would chroot {ctx.target} and run `apt-get install` on them")
+        console.grey("  -> the kernel's postinst runs kernel-install, which runs dracut")
+        console.grey("     and ukify, and 90-uki-copy.install places the UKI at /EFI/Linux/")
         console.grey(f"  -> 95-ubuntu-uki-iso-fallback copies it to {ctx.uki_rel}")
         return
 
     if not ctx.release:
         raise BuildError("step_rootfs did not record a kernel release")
+    if not ctx.debs:
+        raise BuildError("no kernel packages were found on the medium")
     if not ctx.target.joinpath("usr/local/bin/ubuntu-uki-iso").is_file():
         raise BuildError(
             "the target has no /usr/local/bin/ubuntu-uki-iso.\n"
@@ -64,32 +78,62 @@ def run(ctx: Context) -> None:
             "without it the UKI is built but the fallback is never written."
         )
 
+    _install_kernel_packages(ctx)
+    _verify(ctx)
+
+
+def _install_kernel_packages(ctx: Context) -> None:
+    """Install the kernel on the target the way its upgrades will.
+
+    ``KERNEL_INSTALL_BOOT_ROOT`` is what points kernel-install at the ESP
+    instead of at ``/boot`` on the root filesystem, where firmware would never
+    look for it. It is set in the environment, and inherited by apt, by dpkg,
+    and by the maintainer script that finally runs kernel-install — which is why
+    it is set here rather than passed to kernel-install directly: kernel-install
+    is no longer ours to call.
+    """
+    console, runner = ctx.console, ctx.runner
+
+    staging = ctx.target / DEB_STAGING
+    staging.mkdir(parents=True, exist_ok=True)
+    for deb in ctx.debs:
+        shutil.copyfile(deb, staging / deb.name)
+
     _mount_chroot_fs(ctx)
-    console.info("running kernel-install inside the target (dracut + ukify)")
-    console.info("this builds the initramfs for this machine — it takes a few minutes")
+    console.info(f"installing the kernel package on the target ({ctx.release})")
+    console.info("its postinst builds the initramfs — this takes a few minutes")
 
     result = runner.run(
         "chroot",
         str(ctx.target),
         "env",
         "KERNEL_INSTALL_BOOT_ROOT=/boot/efi",
-        "kernel-install",
-        "add",
-        ctx.release,
-        f"/boot/vmlinuz-{ctx.release}",
+        "DEBIAN_FRONTEND=noninteractive",
+        "apt-get",
+        "install",
+        "-y",
+        "--no-install-recommends",
+        *[f"/{DEB_STAGING}/{deb.name}" for deb in ctx.debs],
         check=False,
     )
+    shutil.rmtree(staging, ignore_errors=True)
+
     if not result.ok:
         raise BuildError(
-            "kernel-install failed inside the target.\n"
-            "The existing bootloader is untouched, so the machine still boots; "
-            "see the output above for the cause."
+            "installing the kernel packages failed inside the target.\n\n"
+            "The existing bootloader is untouched and the ESP was just formatted,\n"
+            "so the machine's bootability is now down to what this step did: see\n"
+            "the output above before rebooting it."
         )
-
-    _verify(ctx)
 
 
 def _mount_chroot_fs(ctx: Context) -> None:
+    """Mount /dev, /proc, /sys and /run so apt and dracut have what they need.
+
+    More is mounted here than the old kernel-install call needed: apt wants
+    /proc and /dev for dpkg's maintainer scripts, and dracut's initramfs build
+    reads /sys to decide which modules this machine actually needs.
+    """
     runner = ctx.runner
     for source, target, fstype in (
         ("/dev", ctx.target / "dev", None),
@@ -105,7 +149,7 @@ def _mount_chroot_fs(ctx: Context) -> None:
 
 
 def _verify(ctx: Context) -> None:
-    """Check the ESP itself, not kernel-install's exit code.
+    """Check the ESP itself, not apt's exit code.
 
     The failure this catches is a UKI that was built but placed somewhere the
     firmware will never look.
@@ -115,7 +159,7 @@ def _verify(ctx: Context) -> None:
     versioned = sorted((ctx.esp_mount / "EFI/Linux").glob("*.efi"))
     if not versioned:
         raise BuildError(
-            f"kernel-install reported success but {ctx.esp_mount}/EFI/Linux "
+            f"the kernel package installed, but {ctx.esp_mount}/EFI/Linux "
             "contains no .efi\n\n"
             "The UKI is what the firmware boots. Without it the machine has no\n"
             "bootable entry — though \\EFI\\BOOT\\BOOTX64.EFI may still be present."
@@ -132,7 +176,8 @@ def _verify(ctx: Context) -> None:
     )
 
     _verify_fallback(ctx, uki_path)
-    _verify_cmdline(ctx)
+    _verify_contents(ctx, uki_path)
+    _verify_kernel_installed(ctx)
 
 
 def _verify_fallback(ctx: Context, uki_path: Path) -> None:
@@ -161,13 +206,21 @@ def _verify_fallback(ctx: Context, uki_path: Path) -> None:
     ctx.console.ok("firmware fallback written: \\EFI\\BOOT\\BOOTX64.EFI")
 
 
-def _verify_cmdline(ctx: Context) -> None:
-    """Read the embedded command line back out of the finished UKI.
+def _verify_contents(ctx: Context, uki_path: Path) -> None:
+    """Read the finished UKI's sections back out of the file.
 
-    The only way to confirm the thing that will actually run has the root UUID
-    the filesystem just got, rather than the placeholder it was built with.
+    The command line is the one that matters: it is the only way to confirm the
+    thing that will actually run carries the root UUID the filesystem just got,
+    rather than the placeholder the payload was built with. The initramfs is
+    checked alongside it because a UKI without one boots to an empty panic.
     """
-    embedded = pe.cmdline(ctx.uki_path) if ctx.uki_path else None
+    if pe.read_section(uki_path, ".initrd") is None:
+        raise BuildError(
+            "the UKI has no .initrd section — dracut did not contribute one, so the\n"
+            "kernel would panic before it could find its root filesystem."
+        )
+
+    embedded = pe.cmdline(uki_path)
     if embedded is None:
         ctx.console.warn("could not read .cmdline out of the UKI; skipping that check")
         return
@@ -185,3 +238,20 @@ def _verify_cmdline(ctx: Context) -> None:
             f"It says: {embedded}"
         )
     ctx.console.ok("the UKI points at the filesystem that was just created")
+
+
+def _verify_kernel_installed(ctx: Context) -> None:
+    """Confirm the package installed, rather than merely unpacking.
+
+    ``/lib/modules/<release>`` exists only if dpkg ran the install through to
+    the end, and the kernel-install run that produced the UKI is part of the
+    same maintainer script. It is worth checking here because the payload has no
+    kernel of its own: there is no second copy on this machine to fall back to.
+    """
+    modules = ctx.target / "lib/modules" / ctx.release
+    if not modules.is_dir():
+        raise BuildError(
+            f"the kernel package did not install: {modules} is missing.\n"
+            "The UKI on the ESP would have no modules to load."
+        )
+    ctx.console.ok(f"kernel installed: /lib/modules/{ctx.release}")

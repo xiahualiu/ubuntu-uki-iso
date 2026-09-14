@@ -71,17 +71,30 @@ def build(layout: Layout, console: Console, runner: Runner) -> Path:
     finally:
         _umount_chroot_fs(rootfs, mounted, runner)
 
-    produced = sorted(staging.glob("*.efi"))
-    if not produced:
-        raise BuildError(f"kernel-install reported success but produced no UKI under {staging}")
-
-    source = produced[0]
+    source = _harvest(staging)
     shutil.copyfile(source, layout.uki_file)
     console.grey(f"kernel-install produced: {source.name}")
 
     _verify(layout, console)
     console.info(f"UKI: {layout.uki_file} ({layout.uki_file.stat().st_size // 1024 // 1024} MB)")
     return layout.uki_file
+
+
+def _harvest(staging: Path) -> Path:
+    """The UKI kernel-install produced.
+
+    From ``EFI/Linux/``, where systemd's ``90-uki-copy.install`` puts it, named
+    after the entry token and the version — not from the root of the staging
+    directory. The fallback plugin's copy of the same file
+    (``EFI/BOOT/BOOTX64.EFI``) is in there too, so harvesting by directory is
+    what keeps the two from being confused for each other.
+    """
+    produced = sorted((staging / "EFI/Linux").glob("*.efi"))
+    if not produced:
+        raise BuildError(
+            f"kernel-install reported success but produced no UKI under {staging / 'EFI/Linux'}"
+        )
+    return produced[0]
 
 
 def _mount_chroot_fs(rootfs: Path, runner: Runner) -> list[Path]:

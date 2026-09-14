@@ -5,6 +5,11 @@ This replaces what was a Makefile. The targets were always thin wrappers around
 shell scripts, and the interesting part — which flag reaches which step, and
 what a failure means — was spread across both. Here it is in one place, with
 argparse doing the parsing and the exception hierarchy doing the exit codes.
+
+Two ways in, and both are the guard at the bottom of this file: the
+``ubuntu-uki-iso`` console script declared in ``[project.scripts]``, and
+``python -m ubuntu_uki_iso.cli``. There is deliberately no ``__main__.py`` —
+one module holding the entry point beats two that each hold half of it.
 """
 
 from __future__ import annotations

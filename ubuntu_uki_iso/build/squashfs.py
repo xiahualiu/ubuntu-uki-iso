@@ -8,8 +8,8 @@
 
 The live path is Debian-conventional, which is why it needs the explicit
 ``rd.live.dir`` and ``rd.live.squashimg`` overrides on the command line:
-dracut's own default is ``/LiveOS/squashfs.img``. Change either path here and
-``data/cmdline/live`` has to change with it.
+dracut's own default is ``/LiveOS/squashfs.img``. Change either path in
+:mod:`ubuntu_uki_iso.paths` and ``data/cmdline/live`` has to change with it.
 """
 
 from __future__ import annotations
@@ -18,13 +18,11 @@ import os
 import sys
 from pathlib import Path
 
+from .. import paths
 from ..errors import BuildError
 from ..log import Console, get_console
 from ..paths import Layout
 from ..proc import Runner
-
-LIVE_SUBPATH = Path("live/filesystem.squashfs")
-PAYLOAD_SUBPATH = Path("payload/rootfs.squashfs")
 
 #: Everything a running system owns, plus package-manager scratch that would
 #: be dead weight on the medium. /boot is kept — the kernel and its modules
@@ -93,11 +91,11 @@ def build(layout: Layout, console: Console, runner: Runner) -> dict[str, Path]:
 
     return {
         "live": _squash(
-            layout.rootfs_live, layout.iso_stage / LIVE_SUBPATH, "live", console, runner
+            layout.rootfs_live, layout.iso_stage / paths.LIVE_SQUASHFS, "live", console, runner
         ),
         "installed": _squash(
             layout.rootfs_installed,
-            layout.iso_stage / PAYLOAD_SUBPATH,
+            layout.iso_stage / paths.PAYLOAD_SQUASHFS,
             "installed",
             console,
             runner,

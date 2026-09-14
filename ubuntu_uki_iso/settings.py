@@ -49,6 +49,14 @@ BOOT_LABEL = _env("BOOT_LABEL", "xiahualab")
 #: ignores it.
 FALLBACK_EFI_PATH = r"\EFI\BOOT\BOOTX64.EFI"
 
+#: Where the ESP is mounted on the installed system.
+#:
+#: Two things have to agree on this and they are written at different times: the
+#: fstab mounts the partition here, and the kernel package's postinst hook
+#: points kernel-install's boot root here. A disagreement puts the UKI
+#: somewhere the firmware never looks.
+ESP_MOUNT = _env("ESP_MOUNT", "/boot/efi")
+
 # -- distributions ----------------------------------------------------------
 
 UBUNTU_SUITE = _env("UBUNTU_SUITE", "resolute")

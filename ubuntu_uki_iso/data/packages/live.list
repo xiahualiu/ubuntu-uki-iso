@@ -19,9 +19,9 @@ tzdata
 
 # --- kernel / initramfs tooling -------------------------------------------
 # dracut + ukify + the EFI stub are needed at BUILD time, because the ISO's own
-# UKI is produced inside this rootfs by kernel-install. They are also what
-# makes the live environment able to re-run kernel-install against the target
-# if that is ever needed.
+# UKI is produced inside this rootfs by kernel-install. They also travel to the
+# target, inside the payload this image installs: there the package's postinst
+# runs kernel-install, which needs all three.
 dracut
 systemd-ukify
 systemd-boot-efi
