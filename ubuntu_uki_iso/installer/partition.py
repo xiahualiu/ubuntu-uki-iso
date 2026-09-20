@@ -11,7 +11,9 @@ makes the install reproducible.
 
 from __future__ import annotations
 
-from .. import settings
+from pathlib import Path
+
+from .. import gpt, settings
 from ..errors import BuildError
 from . import device
 from .context import Context
@@ -47,7 +49,13 @@ def run(ctx: Context) -> None:
         "sgdisk",
         "--new=2:0:0",
         "--typecode=2:8300",
-        "--change-name=2=ubuntu-uki-iso-root",
+        # Fixed, not generated. This GUID is what the command line inside the
+        # prebuilt UKI names, so it is the one thing about this partition that
+        # is decided before the disk is touched — and it has to be written
+        # exactly as settings.ROOT_PARTUUID spells it, lowercase, because that
+        # is the form the kernel matches and /dev/disk/by-partuuid uses.
+        f"--partition-guid=2:{settings.ROOT_PARTUUID}",
+        f"--change-name=2={settings.ROOT_LABEL}",
         ctx.root_disk,
     )
 
@@ -64,4 +72,35 @@ def run(ctx: Context) -> None:
         for path in (ctx.part_esp, ctx.part_root):
             if not device.exists(path):
                 raise BuildError(f"{path} did not appear after partitioning")
+        _verify_root_guid(ctx)
         console.ok("partitions created")
+
+
+def _verify_root_guid(ctx: Context) -> None:
+    """Read the table back, rather than trusting sgdisk's exit code.
+
+    The root partition's GUID is the one value the prebuilt UKI's command line
+    depends on, and it is also the only one sgdisk was *told* rather than asked
+    for — so it is the one that can silently come out wrong. A mismatch here is
+    a machine that installs perfectly and panics at first boot with "unable to
+    find root device", which is the failure this check exists to move from
+    after the reboot to during the install.
+    """
+    table = gpt.parse(Path(ctx.root_disk))
+    root = table.by_number(2)
+    if root is None:
+        raise BuildError(
+            f"{ctx.root_disk} has no second partition after partitioning.\n"
+            f"Partitions found: {len(table.partitions)}"
+        )
+
+    expected = settings.ROOT_PARTUUID.lower()
+    if root.partuuid != expected:
+        raise BuildError(
+            f"{ctx.root_disk} partition 2 has PARTUUID {root.partuuid},\n"
+            f"but the UKI's command line names {expected}.\n"
+            "The machine would install and then panic at first boot looking for a\n"
+            "partition that does not exist. The disk has been repartitioned but\n"
+            "nothing has been written to the filesystems yet."
+        )
+    ctx.console.ok(f"root partition PARTUUID: {root.partuuid}")

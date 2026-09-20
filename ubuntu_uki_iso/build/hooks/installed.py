@@ -4,22 +4,21 @@ This is the system that ends up on the target disk. The bar is different from
 the live hook: nothing that is only useful during installation, no installer,
 no autologin, no console conveniences.
 
-Two things are deliberately absent, and they are the same decision.
+**There is no kernel here, and no UKI**, because both arrive together in the
+package the installer installs — built on the build machine, not here and not
+on the target. That is the shape of the whole design: the machine that boots
+never builds its own boot artifact, so its first install and every later kernel
+update are the same operation, installing a version of that package, rather
+than two mechanisms of which only one is ever exercised again.
 
-**There is no kernel here** — not the custom one, not any. The target gets its
-kernel by installing the packages the medium carries, with apt, in a chroot,
-which is exactly what a kernel upgrade on that machine will be later. Baking a
-kernel in would give the machine two ways to have acquired one, and the way
-that was not the upgrade path is the way that never gets exercised.
-
-**And there is no UKI**, because the installed command line carries
-``root=UUID=@@ROOT_UUID@@``, which is not a real UUID until the installer has
-partitioned and formatted the disk. A UKI generated now would bake in the
-placeholder and produce an unbootable system that looks fine.
+Nor is there anything here that *could* build one. The kernel-install plugins
+and the hooks that would call kernel-install are deliberately not installed:
+the package's own postinst does the work, and a kernel-install run on this
+machine would race it.
 
 What this hook does have to get right is that the install will work:
-:func:`verify_packages_resolve` proves, at build time, that apt can install
-those packages from this rootfs alone, with no apt lists and no network.
+:func:`verify_packages_resolve` proves, at build time, that apt can install the
+package from this rootfs alone, with no apt lists and no network.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from ...config import boot, dracut_conf, install_conf
 from ...errors import BuildError
 from ...log import Console, get_console
 from ...paths import Layout
-from ...shim import install_kernel_install_plugins, install_kernel_package_hooks
 from .common import (
     chroot,
     cleanup,
@@ -88,25 +86,31 @@ _DEB_CHECK_DIR = Path("tmp/kernel-deb-check")
 
 
 def verify_packages_resolve(target: Path, layout: Layout, console: Console) -> None:
-    """Prove the kernel packages install from this rootfs alone.
+    """Prove the UKI package installs from this rootfs alone.
 
-    The payload carries no kernel; the target gets one by installing these
-    packages from the medium. That puts apt in the position of resolving their
-    dependencies on a machine with no apt lists and — during an install — no
-    network. A dependency apt would have to fetch is a failure that would
-    otherwise appear on the target, after partitioning, with the disk already
-    formatted.
+    The payload carries no kernel and no UKI; the target gets both by installing
+    this one package from the medium. That puts apt in the position of
+    resolving its dependencies on a machine with no apt lists and — during an
+    install — no network. A dependency apt would have to fetch is a failure
+    that would otherwise appear on the target, after partitioning, with the
+    disk already formatted, and with nothing else on the medium to install.
 
     ``--simulate`` resolves the whole thing and changes nothing, so the answer
     is available here for the cost of a few seconds. What is checked is not that
     apt succeeds but that it never asks for the network: ``Need to get`` means
     the install would have needed it.
     """
-    image, headers = layout.kernel_debs()
+    package = layout.uki_package
+    if not package.is_file():
+        raise BuildError(
+            f"no UKI package at {package}.\n"
+            "Build it first (`ubuntu-uki-iso build uki-target`): the installed image\n"
+            "can only prove an install that has an artifact to install."
+        )
+
     staging = target / _DEB_CHECK_DIR
     staging.mkdir(parents=True, exist_ok=True)
-    for deb in (image, headers):
-        shutil.copyfile(deb, staging / deb.name)
+    shutil.copyfile(package, staging / package.name)
 
     result = chroot(
         target,
@@ -114,7 +118,7 @@ def verify_packages_resolve(target: Path, layout: Layout, console: Console) -> N
         "install",
         "--simulate",
         "--no-install-recommends",
-        *[f"/{_DEB_CHECK_DIR}/{deb.name}" for deb in (image, headers)],
+        f"/{_DEB_CHECK_DIR}/{package.name}",
         check=False,
         capture=True,
     )
@@ -146,9 +150,17 @@ def main(argv: list[str] | None = None) -> int:
     install_file(install_conf(), target / "etc/kernel/install.conf")
     install_file(dracut_conf("installed"), target / "etc/dracut.conf.d/10-installed.conf")
 
-    # The unrendered template, deliberately. The installer substitutes the real
-    # root UUID and verifies that no placeholder survives.
-    write_file(target / "etc/kernel/cmdline", boot.cmdline_installed_unrendered() + "\n")
+    # The rendered command line, not a template: it names a fixed PARTUUID that
+    # the installer writes into the partition table, so there is nothing left
+    # to substitute on the target. The installer checks it still matches rather
+    # than rewriting it — see installer/target.py.
+    write_file(target / "etc/kernel/cmdline", boot.cmdline_installed() + "\n")
+
+    # Without this, a UKI built on the target would be named after the
+    # machine-id, which the target does not have until it first boots — and
+    # which differs from the build machine's. A fixed token is what lets the
+    # prebuilt UKI's name be the one every later build would choose too.
+    write_file(target / "etc/kernel/entry-token", f"{settings.ENTRY_TOKEN}\n")
 
     write_file(target / "etc/hostname", f"{settings.BOOT_LABEL}\n")
     write_file(
@@ -156,25 +168,26 @@ def main(argv: list[str] | None = None) -> int:
         f"127.0.0.1\tlocalhost\n127.0.1.1\t{settings.BOOT_LABEL}\n",
     )
 
-    # --- the package, and the kernel-install plugins ----------------------
-    console.step("  hook(installed): plugins")
+    # --- the package ------------------------------------------------------
+    console.step("  hook(installed): the package")
     install_python_package(target, console)
 
-    for path in install_kernel_install_plugins(target):
-        console.grey(f"  {path.relative_to(target)}")
-    # The plugins only run if something calls kernel-install. On this image that
-    # is the postinst hook below and nothing else — see ukis/trigger.py.
-    for path in install_kernel_package_hooks(target):
-        console.grey(f"  {path.relative_to(target)}")
+    # Deliberately *not* the kernel-install plugins or the postinst hooks that
+    # would call kernel-install. Nothing on this machine builds a UKI: the UKI
+    # arrives built, inside the package the installer installs, and a
+    # kernel-install run here would race it and overwrite it. See
+    # ukis/postinst.py for what happens instead. The plugins remain in the
+    # source tree as the libraries that postinst calls.
     console.info(
-        "  every kernel install now refreshes \\EFI\\BOOT\\BOOTX64.EFI "
-        f"and keeps {settings.UKI_RETENTION} UKIs"
+        f"  this machine builds no UKIs; it boots the one the {settings.PACKAGE_NAME} "
+        "package installs"
     )
 
-    # --- the kernel packages ----------------------------------------------
-    # The kernel reaches the target as a package, so what has to be proven here
-    # is that installing it there will work.
-    console.step("  hook(installed): kernel packages")
+    # --- the installation itself ------------------------------------------
+    # The target installs one package, and it is the only thing it ever
+    # installs, so what has to be proven here is that installing it will work
+    # with no apt lists and no network.
+    console.step("  hook(installed): the installation")
     verify_packages_resolve(target, layout, console)
 
     # --- services ---------------------------------------------------------

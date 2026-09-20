@@ -6,17 +6,21 @@ tree is copied to :data:`TARGET_LIB` and small shims are generated that put
 that directory on ``sys.path`` and call into it.
 
 Why shims rather than copying a self-contained script per entry point: the
-logic stays in one importable, testable place, and the thing sitting in
-``/etc/kernel/install.d/`` — or in ``/etc/kernel/postinst.d/`` — is small enough
-to read in full. The cost is that the target needs the package present, which
-the rootfs build guarantees, and which the installer re-checks before it needs
-it (:func:`ubuntu_uki_iso.installer.uki.run`) rather than assuming.
+logic stays in one importable, testable place, and the thing dpkg actually
+executes is small enough to read in full. The cost is that the target needs the
+package present — which is why the UKI package carries its own copy rather than
+importing whatever the payload left on the machine.
 
-There are two kinds of entry point here, and they are a chain rather than
-alternatives. The **install.d plugins** run when kernel-install runs. The
-**package hooks** in ``postinst.d`` and ``postrm.d`` are what make kernel-install
-run at all when a kernel package is installed or removed — see
-:mod:`ubuntu_uki_iso.ukis.trigger` for why nothing else does.
+There are two entry points, at two paths, and the difference is deliberate:
+
+``PACKAGE_LIB``
+    the UKI package's ``postinst``. This runs on the install path, so it must
+    be the code from the package being installed.
+
+``TARGET_LIB``
+    the console script, installed by the payload at build time. ``--bless`` and
+    the boot marker run from it, and they are recovery tools: they have to work
+    on a machine whose package state is exactly what is in question.
 """
 
 from __future__ import annotations
@@ -28,6 +32,14 @@ TARGET_LIB = "/usr/local/lib/ubuntu-uki-iso"
 
 #: The console script.
 TARGET_BIN = "/usr/local/bin/ubuntu-uki-iso"
+
+#: Where the UKI package carries its own copy of this tree, for its postinst.
+#:
+#: Deliberately not :data:`TARGET_LIB`. The postinst must run the code from the
+#: package being installed, not whatever the payload happened to put on the
+#: machine — otherwise an upgrade would place the new UKI using the old logic,
+#: and the bug would only appear after the version that fixes it ships.
+PACKAGE_LIB = "/usr/lib/ubuntu-uki-iso"
 
 _SHIM = '''#!/usr/bin/env python3
 """{description}
@@ -47,90 +59,30 @@ if __name__ == "__main__":
 '''
 
 
-def render_shim(module: str, description: str, function: str = "main") -> str:
+def render_shim(
+    module: str, description: str, function: str = "main", *, lib: str = TARGET_LIB
+) -> str:
     """A standalone executable that calls ``<module>.<function>()``."""
-    return _SHIM.format(module=module, description=description, lib=TARGET_LIB, function=function)
+    return _SHIM.format(module=module, description=description, lib=lib, function=function)
 
 
-def write_shim(path: Path, module: str, description: str, function: str = "main") -> Path:
+def write_shim(
+    path: Path,
+    module: str,
+    description: str,
+    function: str = "main",
+    *,
+    lib: str = TARGET_LIB,
+) -> Path:
     """Write a shim and make it executable.
 
-    Mode 0755 explicitly: these run from kernel-install and from the live
-    environment's PATH, and a shim that is not executable fails as "command not
-    found", which points nowhere useful.
+    Mode 0755 explicitly: dpkg runs one of these directly and the live
+    environment runs the other from PATH, and a shim that is not executable
+    fails as "command not found", which points nowhere useful. For the
+    ``postinst`` it is worse than useless — dpkg treats a maintainer script it
+    cannot execute as a failed install.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_shim(module, description, function), encoding="utf-8")
+    path.write_text(render_shim(module, description, function, lib=lib), encoding="utf-8")
     path.chmod(0o755)
     return path
-
-
-#: The kernel-install plugins, as (filename, module, description).
-#:
-#: Name order is execution order: kernel-install runs the scripts in
-#: /etc/kernel/install.d/ sorted by name. 90-uki-copy.install (shipped by
-#: systemd) writes the versioned UKI, 95 refreshes the firmware fallback, and
-#: 99 prunes. Pruning before the copy would delete the wrong set.
-KERNEL_INSTALL_PLUGINS: tuple[tuple[str, str, str], ...] = (
-    (
-        "95-ubuntu-uki-iso-fallback.install",
-        "ubuntu_uki_iso.ukis.fallback",
-        "Copy the new UKI to \\EFI\\BOOT\\BOOTX64.EFI, the path firmware boots "
-        "with no configuration at all.",
-    ),
-    (
-        "99-ubuntu-uki-iso-retention.install",
-        "ubuntu_uki_iso.ukis.retention",
-        "Prune old UKIs from \\EFI\\Linux so the ESP does not fill up.",
-    ),
-)
-
-
-def install_kernel_install_plugins(root: Path) -> list[Path]:
-    """Write every kernel-install plugin into ``root``."""
-    written = []
-    plugin_dir = root / "etc/kernel/install.d"
-    for filename, module, description in KERNEL_INSTALL_PLUGINS:
-        written.append(write_shim(plugin_dir / filename, module, description))
-    return written
-
-
-#: The hooks that make a kernel *package* install run kernel-install at all, as
-#: (directory, filename, function, description).
-#:
-#: The plugins above only run once kernel-install is called, and nothing on a
-#: stock Ubuntu system calls it — see :mod:`ubuntu_uki_iso.ukis.trigger`. Without
-#: these, a kernel upgrade installs a kernel and builds no UKI.
-#:
-#: ``zz-`` so they run after the distribution's own hooks, following the
-#: convention that the last word on the boot path goes to the thing that owns
-#: it.
-KERNEL_PACKAGE_HOOKS: tuple[tuple[str, str, str, str], ...] = (
-    (
-        "postinst.d",
-        "zz-ubuntu-uki-iso",
-        "postinst_main",
-        "Build the UKI when a kernel image is installed.",
-    ),
-    (
-        "postrm.d",
-        "zz-ubuntu-uki-iso",
-        "postrm_main",
-        "Remove the UKI when a kernel image is removed.",
-    ),
-)
-
-
-def install_kernel_package_hooks(root: Path) -> list[Path]:
-    """Write the postinst and postrm hooks into ``root``."""
-    written = []
-    for directory, filename, function, description in KERNEL_PACKAGE_HOOKS:
-        written.append(
-            write_shim(
-                root / f"etc/kernel/{directory}" / filename,
-                "ubuntu_uki_iso.ukis.trigger",
-                description,
-                function,
-            )
-        )
-    return written

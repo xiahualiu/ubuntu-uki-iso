@@ -6,15 +6,21 @@ rebuilding the UKI. That is the trade for having nothing between the firmware
 and the kernel, and it is why these are versioned templates rather than
 something edited in place on the machine.
 
-Both cmdline files are templates. Rendering them is the only supported way to
-get a command line out, because the two substitutions they need — the volume
-label and the target's root UUID — are exactly the two things that are wrong
-in a way that produces a machine that does not boot:
+Both command lines are **static** — everything they name is known when the ISO
+is built, not when the target's disk is formatted. That is what lets the
+target's UKI be built here rather than there.
 
-* a volume label that does not match the ISO's sends dracut hunting for a
-  medium that is not there
-* a ``root=UUID=`` that does not match the filesystem panics with "unable to
-  find root device", after a UKI that looked perfectly fine was built
+* the live one names the ISO's volume label, substituted from settings so the
+  label burned into the ISO and the label dracut searches for cannot drift
+* the installed one names a PARTUUID, which the installer writes into the
+  partition table from the same constant — so a partition that does not exist
+  yet still has an identity known at build time
+
+Rendering is still the only supported way to get a command line out, because
+each of those substitutions is wrong in a way that produces a machine that does
+not boot: a label that does not match sends dracut hunting for a medium that is
+not there, and a PARTUUID that does not match panics with "unable to find root
+device" — after a UKI that looked perfectly fine was built.
 """
 
 from __future__ import annotations
@@ -25,11 +31,20 @@ from .. import settings
 from ..errors import ConfigError
 from ..paths import data_file
 
-#: Substituted with the target filesystem's UUID at install time.
-ROOT_UUID_PLACEHOLDER = "@@ROOT_UUID@@"
-
 #: Substituted with settings.VOLID.
 VOLID_PLACEHOLDER = "@@VOLID@@"
+
+#: Substituted with settings.ROOT_PARTUUID.
+ROOT_PARTUUID_PLACEHOLDER = "@@ROOT_PARTUUID@@"
+
+_PLACEHOLDERS = (VOLID_PLACEHOLDER, ROOT_PARTUUID_PLACEHOLDER)
+
+#: Which dracut configuration belongs to which build.
+_DRACUT_CONFS = {
+    "live": "00-live",
+    "installed": "10-installed",
+    "uki-build": "20-uki-build",
+}
 
 
 def _render(template: str, substitutions: dict[str, str], source: str) -> str:
@@ -37,7 +52,7 @@ def _render(template: str, substitutions: dict[str, str], source: str) -> str:
     for placeholder, value in substitutions.items():
         rendered = rendered.replace(placeholder, value)
 
-    leftover = [p for p in (ROOT_UUID_PLACEHOLDER, VOLID_PLACEHOLDER) if p in rendered]
+    leftover = [p for p in _PLACEHOLDERS if p in rendered]
     if leftover:
         raise ConfigError(
             f"{source} still contains unsubstituted placeholder(s): {', '.join(leftover)}\n"
@@ -61,36 +76,38 @@ def cmdline_live() -> str:
     )
 
 
-def cmdline_installed_unrendered() -> str:
-    """The installed command line, still carrying ``@@ROOT_UUID@@``.
+def cmdline_installed() -> str:
+    """The installed image's command line — finished, not a template.
 
-    Used for the dry-run plan, where the real UUID does not exist yet.
+    There is nothing left to substitute at install time: the root partition's
+    GUID is a constant this project writes into the table itself, so the
+    command line is complete the moment the ISO is built. The UKI built from it
+    can therefore be built here, which is the whole point.
     """
-    return data_file("cmdline", "installed").read_text(encoding="utf-8").strip()
-
-
-def render_installed_cmdline(root_uuid: str) -> str:
-    """The installed command line with the target's real root UUID.
-
-    Refuses an empty or placeholder-looking UUID rather than producing a UKI
-    that builds cleanly and panics at boot.
-    """
-    if not root_uuid or root_uuid == ROOT_UUID_PLACEHOLDER:
-        raise ConfigError(f"refusing to render an installed cmdline with root UUID {root_uuid!r}")
+    path = data_file("cmdline", "installed")
     return _render(
-        cmdline_installed_unrendered(),
-        {ROOT_UUID_PLACEHOLDER: root_uuid},
-        "cmdline/installed",
+        path.read_text(encoding="utf-8").strip(),
+        {ROOT_PARTUUID_PLACEHOLDER: settings.ROOT_PARTUUID},
+        str(path),
     )
 
 
 def dracut_conf(variant: str) -> Path:
-    """The dracut configuration for ``live`` or ``installed``.
+    """The dracut configuration for a variant.
 
-    They differ in a way that matters: the live initramfs is built in a
-    container and has to boot on whatever machine the ISO is inserted into, so
-    it is not host-only; the installed one is generated on the target and is.
+    They differ in a way that matters, and it is all about which machine is
+    building:
+
+    * ``live`` — built here, has to boot on whatever machine the ISO is
+      inserted into, so it is not host-only
+    * ``installed`` — shipped to the target, and host-only, because if it is
+      ever used there it is being used on the machine it describes
+    * ``uki-build`` — used *here* to build the target's UKI, so it must not be
+      host-only either: this machine is not that machine, and a probe of it
+      would find none of the target's hardware
     """
-    if variant not in ("live", "installed"):
-        raise ConfigError(f"unknown dracut variant {variant!r}; expected live or installed")
-    return data_file("dracut", f"{'00-live' if variant == 'live' else '10-installed'}.conf")
+    if variant not in _DRACUT_CONFS:
+        raise ConfigError(
+            f"unknown dracut variant {variant!r}; expected one of {', '.join(_DRACUT_CONFS)}"
+        )
+    return data_file("dracut", f"{_DRACUT_CONFS[variant]}.conf")

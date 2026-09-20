@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Literal
 
 from .. import settings
+from ..config import host_packages
 from ..config import kernel as kconfig
 from ..errors import BuildError
 from ..log import Console, get_console
@@ -488,6 +489,7 @@ def check_only(layout: Layout | None = None, console: Console | None = None) -> 
 
     console.step("check-only")
     runner.require("make", "tar", "dpkg-deb")
+    runner.require_packages(*host_packages("build"))
 
     source = build.fetch_source()
     config = _configure(build, source, base_config)

@@ -1,14 +1,15 @@
-"""The build-time proof that the kernel packages install with no network.
+"""The build-time proof that the target's one package installs with no network.
 
-The payload carries no kernel: the target gets one by installing the packages
-off the medium, with apt, on a machine that has no package lists and — during
-an install — no network. A dependency apt would have to fetch is therefore a
-failure that would otherwise appear on the target, after partitioning, with the
-disk already formatted.
+The payload carries neither a kernel nor a UKI: the target gets both by
+installing the package off the medium, with apt, on a machine that has no
+package lists and — during an install — no network. A dependency apt would have
+to fetch is therefore a failure that would otherwise appear on the target,
+after partitioning, with the disk already formatted and nothing else on the
+medium to install.
 
 The chroot is stubbed here. What is being tested is the decision the guard
 makes about apt's answer, and the two things around it that would make the
-guard itself wrong: the paths apt is given, and whether the staged packages are
+guard itself wrong: the paths apt is given, and whether the staged package is
 cleaned up again.
 """
 
@@ -19,13 +20,14 @@ from pathlib import Path
 
 import pytest
 
+from ubuntu_uki_iso import settings
 from ubuntu_uki_iso.build.hooks import installed
 from ubuntu_uki_iso.errors import BuildError
 from ubuntu_uki_iso.log import Console
 from ubuntu_uki_iso.paths import Layout
 
-IMAGE_DEB = "linux-image-7.0.14-ubuntu-uki-iso_7.0.14-ubuntu-uki-iso-1_amd64.deb"
-HEADERS_DEB = "linux-headers-7.0.14-ubuntu-uki-iso_7.0.14-ubuntu-uki-iso-1_amd64.deb"
+RELEASE = "7.0.14-ubuntu-uki-iso"
+UKI_DEB = f"{settings.PACKAGE_NAME}_{RELEASE}_{settings.DPKG_ARCH}.deb"
 STAGING = "tmp/kernel-deb-check"
 
 
@@ -53,23 +55,22 @@ def target(tmp_path: Path) -> Path:
 def layout(tmp_path: Path) -> Layout:
     built = Layout(tmp_path)
     built.kernel.mkdir(parents=True, exist_ok=True)
-    for name in (IMAGE_DEB, HEADERS_DEB):
-        (built.kernel / name).write_bytes(b"")
+    built.kernel_release_file.write_text(f"{RELEASE}\n", encoding="utf-8")
+    built.uki_package.write_bytes(b"")
     return built
 
 
 def test_a_resolvable_install_passes(
     target: Path, layout: Layout, monkeypatch: pytest.MonkeyPatch, console: Console
 ) -> None:
-    chroot = _Chroot(b"0 upgraded, 2 newly installed, 0 to remove.\n")
+    chroot = _Chroot(b"0 upgraded, 1 newly installed, 0 to remove.\n")
     monkeypatch.setattr(installed, "chroot", chroot)
 
     installed.verify_packages_resolve(target, layout, console)
 
     # What apt is told to install has to be what was staged: a mismatch here
     # fails on the target, where it is expensive, not here where it is cheap.
-    for name in (IMAGE_DEB, HEADERS_DEB):
-        assert f"/{STAGING}/{name}" in chroot.argv
+    assert f"/{STAGING}/{UKI_DEB}" in chroot.argv
     assert not (target / STAGING).exists()
 
 

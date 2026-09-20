@@ -40,6 +40,30 @@ class ToolMissing(XiahualabError):
         super().__init__("missing required command(s): " + ", ".join(tools))
 
 
+class PackagesMissing(XiahualabError):
+    """A required package is not installed.
+
+    Distinct from :class:`ToolMissing`, which is about one command: a package
+    can be declared as a requirement without its binary being on this PATH, and
+    the fix is a package-level act.
+
+    The message names the command that fixes it and does not run it. This tool
+    is used on machines it does not own — CI runners, containers — and changing
+    them would change every other job that shares them.
+    """
+
+    def __init__(self, packages: list[str]) -> None:
+        self.packages = tuple(packages)
+        super().__init__(
+            "missing required package(s): "
+            + ", ".join(self.packages)
+            + "\n\nInstall them with:\n    apt-get install -y "
+            + " ".join(self.packages)
+            + "\n\nThe list is declared in the package's data/packages/host.list, and the\n"
+            "tool only ever checks it — see the Requirements section of the README."
+        )
+
+
 class CommandFailed(XiahualabError):
     """An external command exited nonzero and the caller asked for that to be
     fatal."""

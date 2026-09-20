@@ -19,14 +19,20 @@ import sys
 from pathlib import Path
 
 from .. import paths
+from ..config import host_packages
 from ..errors import BuildError
 from ..log import Console, get_console
 from ..paths import Layout
 from ..proc import Runner
 
-#: Everything a running system owns, plus package-manager scratch that would
-#: be dead weight on the medium. /boot is kept — the kernel and its modules
-#: live there and the installed payload needs them.
+#: Everything a running system owns, plus package-manager scratch that would be
+#: dead weight on the medium.
+#:
+#: /boot is kept, and the two images want different things from it: the live
+#: rootfs has the kernel it builds the ISO's own UKI from, and the payload has
+#: essentially nothing, because its kernel and UKI travel in the package. The
+#: exclusions are the same for both because none of them is about /boot —
+#: ``var/tmp`` is the one that matters, since kernel-install stages into it.
 EXCLUDES = (
     "proc",
     "sys",
@@ -108,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
     layout = Layout()
     runner = Runner(dry_run=False, console=console)
     runner.require("mksquashfs")
+    runner.require_packages(*host_packages("build"))
     build(layout, console, runner)
     console.step("squashfs: done")
     return 0

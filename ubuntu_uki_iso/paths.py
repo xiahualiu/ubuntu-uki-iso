@@ -27,10 +27,11 @@ from pathlib import Path
 LIVE_SQUASHFS = Path("live/filesystem.squashfs")
 PAYLOAD_SQUASHFS = Path("payload/rootfs.squashfs")
 
-#: The kernel packages the installer installs on the target, beside the payload
-#: rather than inside it: the payload is unsquashed verbatim, while these are
-#: handed to the package manager on the target. That is what makes a future
-#: kernel update there the same operation as the install was.
+#: The packages the installer installs on the target, beside the payload rather
+#: than inside it: the payload is unsquashed verbatim, while these are handed to
+#: the package manager on the target. One package today — the UKI package — and
+#: a future kernel update there is a newer version of the same file, so the
+#: medium and the upgrade path carry the same artifact.
 PAYLOAD_DEBS = Path("payload/debs")
 
 
@@ -103,33 +104,49 @@ class Layout:
         """
         return self.kernel / "release"
 
-    def kernel_debs(self) -> tuple[Path, Path]:
-        """The kernel image and headers packages, as built.
-
-        Both go to the target: the image carries the kernel and its modules,
-        and the headers match it exactly, which Docker and any future DKMS
-        module need. Deliberately absent is the ``-dbg`` package — hundreds of
-        megabytes that nothing here consumes.
-
-        One implementation, because three callers need the same pair: the live
-        rootfs installs them, the installed rootfs checks that they resolve, and
-        the ISO carries them for the target to install.
-        """
+    def _kernel_deb(self, pattern: str, what: str) -> Path:
+        """The newest matching package, ignoring the ``-dbg`` split."""
         from .errors import BuildError
 
-        found = []
-        for pattern, what in (
-            ("linux-image-*.deb", "image"),
-            ("linux-headers-*.deb", "headers"),
-        ):
-            candidates = [p for p in sorted(self.kernel.glob(pattern)) if "-dbg_" not in p.name]
-            if not candidates:
-                raise BuildError(
-                    f"no kernel {what} .deb in {self.kernel}.\n"
-                    "Run `ubuntu-uki-iso build kernel` first."
-                )
-            found.append(candidates[-1])
-        return found[0], found[1]
+        candidates = [p for p in sorted(self.kernel.glob(pattern)) if "-dbg_" not in p.name]
+        if not candidates:
+            raise BuildError(
+                f"no kernel {what} .deb in {self.kernel}.\nRun `ubuntu-uki-iso build kernel` first."
+            )
+        return candidates[-1]
+
+    def kernel_image_deb(self) -> Path:
+        """The kernel image package: vmlinuz, and every module built.
+
+        This is the one most callers want. The UKI package is assembled from it
+        — the modules are its payload and its vmlinuz is what dracut and ukify
+        consume — and the live rootfs installs it to build the ISO's own UKI.
+        """
+        return self._kernel_deb("linux-image-*.deb", "image")
+
+    @property
+    def uki_package(self) -> Path:
+        """The package ``build uki-target`` produces and the installer installs.
+
+        One name, computed in one place: the build writes it here and the ISO
+        staging copies it from here, and a disagreement would be an ISO that
+        boots, installs nothing, and says so only after the disk is formatted.
+        """
+        from . import settings
+
+        name = f"{settings.PACKAGE_NAME}_{self.kernel_release()}_{settings.DPKG_ARCH}.deb"
+        return self.kernel / name
+
+    def kernel_debs(self) -> tuple[Path, Path]:
+        """The image and the headers, for the callers that want the pair.
+
+        The headers are a *build-side* artifact now. Nothing on the target
+        compiles anything: the modules travel inside the UKI package, so there
+        is no DKMS, no ``make modules``, and no reason to ship them. They are
+        still built (``bindeb-pkg`` produces both or neither) and still
+        installed into the live rootfs, which is why this exists at all.
+        """
+        return self.kernel_image_deb(), self._kernel_deb("linux-headers-*.deb", "headers")
 
     # -- rootfs ------------------------------------------------------------
 

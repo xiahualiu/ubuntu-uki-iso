@@ -1,11 +1,14 @@
 # Packages for the INSTALLED system — minimal server + Docker.
 #
-# This list is unsquashed onto the target disk by installer/30-rootfs.sh from
+# This list is unsquashed onto the target disk by `ubuntu-uki-iso install` from
 # the payload squashfs on the ISO. It is deliberately lean: no GNOME, no snapd,
 # no display server. Everything here has to justify its place on the disk.
 #
-# The kernel is NOT listed. It arrives as the custom .deb built by
-# `make kernel`, installed into this rootfs at ISO build time.
+# Neither the kernel nor the UKI is listed, and neither is anything that could
+# build one. Both arrive in the UKI package, which is the one thing this list's
+# system ever installs — as its first install and as every later kernel update.
+# That is also why there is no dracut, no ukify and no EFI stub here: nothing
+# on this machine compiles, assembles or probes anything.
 
 # --- init and core ---------------------------------------------------------
 systemd
@@ -31,13 +34,12 @@ dosfstools
 util-linux
 smartmontools
 
-# --- kernel / initramfs tooling -------------------------------------------
-# Required on the installed system, not just at build time: kernel-install is
-# what regenerates the UKI when the kernel is upgraded, and without the EFI
-# stub it cannot produce one.
-dracut
-systemd-ukify
-systemd-boot-efi
+# --- boot ------------------------------------------------------------------
+# efibootmgr, so a firmware entry can be recreated from the machine itself if
+# the NVRAM ever loses it. Deliberately absent: dracut, systemd-ukify and
+# systemd-boot-efi. A kernel upgrade here installs a newer version of the UKI
+# package, which brings the UKI already built — nothing on this machine
+# regenerates one, so nothing here needs the tools to.
 efibootmgr
 
 # --- GPU -------------------------------------------------------------------
@@ -46,9 +48,10 @@ efibootmgr
 linux-firmware
 
 # --- interpreter -----------------------------------------------------------
-# The kernel-install plugins and the installer itself are Python. On the
-# installed system this is on the kernel-upgrade path, so it is a real
-# dependency rather than a convenience.
+# The UKI package's postinst is Python, and so are `--bless` and the
+# boot marker. The postinst is on the install path — it is what puts the UKI
+# on the ESP — so this is a real dependency rather than a convenience, and the
+# package declares it in Depends.
 python3-minimal
 
 # --- administration --------------------------------------------------------

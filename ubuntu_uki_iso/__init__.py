@@ -1,4 +1,5 @@
-"""ubuntu-uki-iso — a reproducible Ubuntu image for one specific machine.
+"""
+ubuntu-uki-iso — a reproducible Ubuntu image for one specific machine.
 
 A custom kernel trimmed to the hardware actually present, delivered as a UKI
 the UEFI firmware boots directly: no GRUB, no boot manager, no shim.

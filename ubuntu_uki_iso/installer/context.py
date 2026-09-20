@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .. import settings
 from ..errors import BuildError
 from ..log import Console
 from ..paths import Layout
@@ -25,9 +26,12 @@ TARGET_MOUNT = Path("/mnt/ubuntu-uki-iso-target")
 #: Where the existing array is mounted, read-only, to prove it is readable.
 RAID_VERIFY_MOUNT = Path("/mnt/ubuntu-uki-iso-raid-check")
 
-#: The kernel image package's name prefix. What follows it is the kernel
-#: release, which is the string every other part of the system keys off.
-IMAGE_PACKAGE_PREFIX = "linux-image-"
+#: The control field the UKI package records its kernel release in.
+#:
+#: Separate from ``Version`` on purpose: a repackaging that does not rebuild the
+#: kernel has to change Version, while the release — which names
+#: ``/lib/modules/<release>`` and the UKI's filename — must not.
+RELEASE_FIELD = "X-Kernel-Release"
 
 
 @dataclass
@@ -79,34 +83,49 @@ class Context:
         self.part_root = device.part_name(self.root_disk, 2)
 
     @property
-    def image_deb(self) -> Path | None:
-        """The kernel image package among those found on the medium."""
+    def uki_package(self) -> Path | None:
+        """The UKI package among those found on the medium."""
         for deb in self.debs:
-            if deb.name.startswith(IMAGE_PACKAGE_PREFIX):
+            if deb.name.startswith(settings.PACKAGE_NAME):
                 return deb
         return None
 
     def load_release(self) -> str:
-        """The kernel release the packages on the medium will install.
+        """The kernel release the package on the medium will install.
 
-        Read out of the image package's control metadata rather than from its
-        file name or from a directory listing. The name is a convention
-        bindeb-pkg happens to follow; ``Package:`` is what dpkg records and what
-        the installed system will answer to. The payload carries no kernel any
-        more, so the package is the only authority on which kernel this machine
-        is about to run.
+        Read from the package's own control field rather than from its file name
+        or from a directory listing: the name is a convention, the field is what
+        dpkg records. The payload carries neither a kernel nor a UKI, so this
+        package is the only authority on which kernel this machine is about to
+        run and which UKI belongs on its ESP.
+
+        The field is then checked against the modules the package actually
+        ships. It is the one place the two could disagree, and a disagreement
+        means the UKI and the modules on the machine would be for different
+        kernels — which is a machine that boots and cannot load a driver.
         """
-        image = self.image_deb
-        if image is None:
+        package = self.uki_package
+        if package is None:
             return ""
 
-        package = self.runner.capture("dpkg-deb", "-f", str(image), "Package")
-        if not package.startswith(IMAGE_PACKAGE_PREFIX):
+        release = self.runner.capture("dpkg-deb", "-f", str(package), RELEASE_FIELD).strip()
+        if not release:
             raise BuildError(
-                f"{image.name} is not a kernel image package: it calls itself {package!r}.\n"
-                f"The release is what follows {IMAGE_PACKAGE_PREFIX!r}, so it cannot be derived."
+                f"{package.name} carries no {RELEASE_FIELD} field.\n"
+                "Without it there is no way to know which kernel this machine is about\n"
+                "to run, or which UKI to expect on its ESP."
             )
-        self.release = package[len(IMAGE_PACKAGE_PREFIX) :]
+
+        listing = self.runner.capture("dpkg-deb", "--contents", str(package))
+        if f"lib/modules/{release}" not in listing:
+            raise BuildError(
+                f"{package.name} says it is for kernel {release}, but ships no\n"
+                f"/lib/modules/{release}.\n"
+                "Its metadata and its payload disagree, so the package is malformed:\n"
+                "the UKI would boot a kernel with no modules to load."
+            )
+
+        self.release = release
         return self.release
 
 

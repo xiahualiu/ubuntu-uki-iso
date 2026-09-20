@@ -7,7 +7,7 @@ Layout produced::
                               and appended as a GPT EFI System Partition
     /live/filesystem.squashfs the live environment
     /payload/rootfs.squashfs  the system the installer writes to disk
-    /payload/debs/*.deb       the kernel the installer installs onto it
+    /payload/debs/*.deb       the UKI package — kernel, modules and boot artifact
 
 No BIOS boot, no isolinux, no El Torito emulation. Every target is UEFI.
 
@@ -35,6 +35,7 @@ import sys
 from pathlib import Path
 
 from .. import gpt, paths, settings
+from ..config import host_packages
 from ..errors import BuildError
 from ..log import Console, get_console
 from ..paths import Layout
@@ -221,19 +222,27 @@ def _verify_gpt(layout: Layout, console: Console) -> None:
     console.info(f"GPT: EFI System Partition present, {esp.size_mb} MB (USB)")
 
 
-def _stage_kernel_debs(layout: Layout, console: Console) -> None:
-    """Put the kernel packages on the medium, beside the payload.
+def _stage_uki_package(layout: Layout, console: Console) -> None:
+    """Put the UKI package on the medium, beside the payload.
 
-    The target installs these rather than having a kernel copied onto it, which
-    is what makes a later kernel upgrade on that machine the same operation as
-    the install was. They sit next to the payload because everything the
-    installer consumes from the medium is in one directory.
+    This is the whole of what the target installs: the kernel, its modules and
+    the UKI, in one package. It sits next to the payload because everything the
+    installer consumes from the medium lives in one directory — and because a
+    later kernel update on the installed machine installs a newer version of
+    this same file, so the medium and the update path carry the same artifact.
     """
+    package = layout.uki_package
+    if not package.is_file():
+        raise BuildError(
+            f"no UKI package at {package}.\n"
+            "Run `ubuntu-uki-iso build uki-target` first. Without it the ISO boots,\n"
+            "installs a root filesystem, and leaves a machine with no kernel."
+        )
+
     destination = layout.iso_stage / paths.PAYLOAD_DEBS
     destination.mkdir(parents=True, exist_ok=True)
-    for deb in layout.kernel_debs():
-        shutil.copyfile(deb, destination / deb.name)
-        console.info(f"payload: {paths.PAYLOAD_DEBS}/{deb.name}")
+    shutil.copyfile(package, destination / package.name)
+    console.info(f"payload: {paths.PAYLOAD_DEBS}/{package.name}")
 
 
 def build(layout: Layout, console: Console, runner: Runner) -> Path:
@@ -257,7 +266,7 @@ def build(layout: Layout, console: Console, runner: Runner) -> Path:
     if not layout.uki_file.is_file():
         raise BuildError(f"no UKI at {layout.uki_file}. Run `ubuntu-uki-iso build uki` first.")
 
-    _stage_kernel_debs(layout, console)
+    _stage_uki_package(layout, console)
 
     _run_xorriso(layout, _build_efi_image(layout, console, runner), console, runner)
     _verify(layout, console, runner)
@@ -273,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     layout = Layout()
     runner = Runner(dry_run=False, console=console)
     runner.require("xorriso", "mkfs.vfat", "mmd", "mcopy", "dd")
+    runner.require_packages(*host_packages("build"))
     build(layout, console, runner)
     return 0
 

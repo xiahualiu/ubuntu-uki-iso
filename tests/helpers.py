@@ -66,10 +66,14 @@ def make_gpt_iso(
     partitions: list[tuple[bytes, int, int, str]] | None = None,
     mbr: bool = True,
     gpt: bool = True,
+    unique_guids: list[bytes] | None = None,
 ) -> bytes:
     """An ISO-shaped file with an MBR signature and/or a GPT.
 
-    ``partitions`` is a list of ``(type_guid_bytes, first_lba, last_lba, name)``.
+    ``partitions`` is a list of ``(type_guid_bytes, first_lba, last_lba, name)``,
+    and ``unique_guids`` the per-partition GUIDs in the same order — raw bytes,
+    because the on-disk encoding is mixed-endian and building one from a string
+    is the thing under test rather than something to be assumed here.
     """
     partitions = partitions if partitions is not None else [(ESP_TYPE_GUID, 64, 2048, "Appended2")]
     image = bytearray(total_bytes)
@@ -87,7 +91,10 @@ def make_gpt_iso(
         for index, (type_guid, first, last, name) in enumerate(partitions):
             entry = bytearray(entry_size)
             entry[0:16] = type_guid
-            entry[16:32] = bytes(16)  # unique GUID, unused by the parser
+            if unique_guids is not None:
+                entry[16:32] = unique_guids[index]
+            else:
+                entry[16:32] = bytes(16)
             struct.pack_into("<QQ", entry, 32, first, last)
             encoded = name.encode("utf-16-le")
             entry[56 : 56 + len(encoded)] = encoded

@@ -35,8 +35,8 @@ EPILOG = (
     "  no swap partition, no zram.\n"
     "\n"
     "  It does not overwrite a pre-existing bootloader entry. The firmware entry\n"
-    "  it creates points at \\EFI\\BOOT\\BOOTX64.EFI, which the kernel-install\n"
-    "  plugin keeps pointed at the current kernel.\n"
+    "  it creates points at \\EFI\\BOOT\\BOOTX64.EFI, which the UKI package's\n"
+    "  postinst keeps pointed at the current kernel.\n"
 )
 
 
@@ -145,8 +145,8 @@ def _print_plan(ctx: Context, preflight_result: preflight.Preflight) -> None:
     console.info("      format the root filesystem ext4")
     console.info(f"      write the payload onto it: {ctx.payload}")
     kernel = ctx.release or "<release>"
-    console.info(f"      install the kernel package ({kernel}) — it builds its own UKI")
-    console.info("boot: write \\EFI\\BOOT\\BOOTX64.EFI and create a firmware entry")
+    console.info(f"      install the UKI package ({kernel}) — the UKI is already built")
+    console.info("boot: it places the UKI on the ESP; then create a firmware entry")
 
 
 def _cleanup(ctx: Context) -> None:

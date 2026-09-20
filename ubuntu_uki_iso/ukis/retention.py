@@ -22,7 +22,6 @@ Two UKIs are never removed whatever the ordering says:
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -110,37 +109,3 @@ def prune(
         removed.append(uki.path)
 
     return removed
-
-
-def main(argv: list[str] | None = None) -> int:
-    """kernel-install plugin entry point.
-
-    kernel-install calls plugins as::
-
-        <plugin> <verb> <kernel-version> <kernel-image> [<initrd>]
-
-    Only ``add`` is interesting; ``remove`` already deletes what it should.
-    """
-    argv = sys.argv if argv is None else argv
-    console = get_console()
-
-    if len(argv) < 3:
-        console.error("usage: 99-ubuntu-uki-iso-retention.install <verb> <kernel-version> ...")
-        return 1
-
-    verb, kernel_version = argv[1], argv[2]
-    if verb != "add":
-        return 0
-
-    boot_root = Path(os.environ.get("KERNEL_INSTALL_BOOT_ROOT", "/boot/efi"))
-    removed = prune(boot_root, just_installed=kernel_version, console=console)
-
-    for path in removed:
-        console.grey(f"  removed {path.name}")
-    if removed:
-        console.info(f"pruned {len(removed)} old UKI(s) from {boot_root / UKI_SUBDIR}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

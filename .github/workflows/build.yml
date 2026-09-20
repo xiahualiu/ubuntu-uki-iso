@@ -1,15 +1,18 @@
 name: build
 
-# Runs on a self-hosted runner on ubuntu-uki-iso itself. That is a deliberate choice
-# with a security consequence worth stating plainly: a runner on this box
-# executes repo workflows in a container that can see the host's 58 TB array.
+# The runner is NOT the target machine. It never has been the machine this
+# image is installed onto, and nothing here may assume it is: the build is
+# hardware-independent by construction, because the driver trim is *declared*
+# (ubuntu_uki_iso/data/kernel/) rather than observed, and the target's
+# initramfs is built from an explicit module list rather than from a probe.
 #
-#   - Keep this repository private, or restrict who can open a PR against it.
+# That is also why the runner does not need to be trusted with the array. The
+# build container mounts only the workspace and never /dev, so no build script
+# can reach /dev/sd{a..h} — and the machine that owns them is somewhere else.
+#
 #   - The jobs below are gated so that untrusted events cannot reach the
 #     self-hosted runner. pull_request runs lint only, and it runs on a
-#     GitHub-hosted runner, so no fork can execute anything on this machine.
-#   - The build container mounts only the workspace and never /dev, so a
-#     compromised build script still cannot reach /dev/sd{a..h}.
+#     GitHub-hosted runner.
 
 on:
   push:
@@ -40,6 +43,15 @@ permissions:
 env:
   # Keeps the squashfs and ISO timestamps deterministic where the tools allow.
   SOURCE_DATE_EPOCH: '1700000000'
+  # Debug info is on unless a workflow_dispatch explicitly turns it off.
+  #
+  # Spelled out rather than used directly as `inputs.debug_info`, because that
+  # input is empty on every other event and GitHub's loose equality reads an
+  # empty input as false — so a release build silently took the fast path and
+  # shipped a kernel that cannot symbolize its own stack traces. It also made
+  # the kernel and iso jobs disagree about the cache key, so a release rebuilt
+  # the kernel twice.
+  DEBUG_INFO: ${{ (github.event_name == 'workflow_dispatch' && inputs.debug_info == false) && 'false' || 'true' }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -109,11 +121,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/kernel
-          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-${{ inputs.debug_info }}
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-${{ env.DEBUG_INFO }}
 
       - name: build
         run: |
-          ubuntu-uki-iso build kernel ${{ inputs.debug_info == false && '--no-debug-info' || '' }}
+          ubuntu-uki-iso build kernel ${{ env.DEBUG_INFO == 'false' && '--no-debug-info' || '' }}
 
       - name: record the release
         id: release
@@ -146,11 +158,47 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/kernel
-          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-true
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-${{ env.DEBUG_INFO }}
 
       # `build iso` needs a kernel; if the cache missed, build one.
       - name: kernel (cache miss)
         run: test -s out/kernel/release && echo "kernel present" || ubuntu-uki-iso build kernel
+
+      # Every stage the ISO needs is built here, explicitly. It used to run
+      # `build iso` alone, which requires the rootfs images, both UKIs and the
+      # squashfs to already exist and never builds any of them — it worked only
+      # while a previous run's out/ happened to still be on the runner.
+      #
+      # Not `build all`: that would rebuild the 45-minute kernel every time,
+      # cache or no cache.
+      - name: restore the image stages
+        uses: actions/cache@v4
+        with:
+          path: |
+            out/rootfs-live
+            out/rootfs-installed
+            out/uki
+            out/iso
+          key: >-
+            images-${{ hashFiles('ubuntu_uki_iso/**', 'pyproject.toml') }}-${{
+              hashFiles('ubuntu_uki_iso/data/kernel/*') }}
+
+      - name: build the rootfs images
+        run: |
+          test -d out/rootfs-live && test -d out/rootfs-installed \
+            && echo "rootfs present" || ubuntu-uki-iso build rootfs all
+
+      - name: build the UKIs
+        run: test -s out/uki/BOOTX64.EFI && echo "live UKI present" || ubuntu-uki-iso build uki
+
+      # The target's UKI, packaged with the modules. Built here rather than on
+      # the machine that boots it, which is the whole point: the artifact that
+      # runs has been built and read back before any disk is touched.
+      - name: build the target's UKI package
+        run: ubuntu-uki-iso build uki-target
+
+      - name: build the squashfs images
+        run: test -s out/iso/payload/rootfs.squashfs && echo "squashfs present" || ubuntu-uki-iso build squashfs
 
       - name: build the ISO
         run: ubuntu-uki-iso build iso
@@ -208,7 +256,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/kernel
-          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-true
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-${{ env.DEBUG_INFO }}
 
       - name: build the test container
         run: |

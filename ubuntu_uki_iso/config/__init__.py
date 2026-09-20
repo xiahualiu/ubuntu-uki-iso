@@ -10,10 +10,9 @@ containers and one that merely builds.
 from __future__ import annotations
 
 from .boot import (
-    cmdline_installed_unrendered,
+    cmdline_installed,
     cmdline_live,
     dracut_conf,
-    render_installed_cmdline,
 )
 from .kernel import (
     GuardEntry,
@@ -27,23 +26,23 @@ from .kernel import (
     trim_fragment,
     unknown_fragment_symbols,
 )
-from .packages import PackageList, package_list
+from .packages import PackageList, host_packages, package_list
 
 __all__ = [
     "GuardEntry",
     "PackageList",
     "check_guard",
-    "cmdline_installed_unrendered",
+    "cmdline_installed",
     "cmdline_live",
     "dracut_conf",
     "fragment_symbols",
+    "host_packages",
     "install_conf",
     "never_disable",
     "nodebug_fragment",
     "package_list",
     "parse_config_values",
     "parse_guard",
-    "render_installed_cmdline",
     "trim_fragment",
     "unknown_fragment_symbols",
 ]

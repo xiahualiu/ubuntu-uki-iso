@@ -44,6 +44,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..config import host_packages
 from ..errors import BuildError, ConfigError
 from ..log import Console, get_console
 from ..paths import Layout
@@ -55,6 +56,7 @@ from ..settings import (
     EXPECTED_MD_UUID,
     MD_DEVICE,
     RAID_METADATA_VERSION,
+    ROOT_PARTUUID,
     VM_BOOT_TIMEOUT,
     VM_COMMAND_TIMEOUT,
     VM_CPUS,
@@ -223,6 +225,7 @@ class Harness:
         if not self.layout.iso.is_file():
             raise BuildError(f"no ISO at {self.layout.iso}.\nRun `ubuntu-uki-iso build iso` first.")
         Runner.require(QEMU, "expect")
+        Runner.require_packages(*host_packages("build", "test"))
         self._find_ovmf()
         self._make_disks()
 
@@ -838,17 +841,27 @@ class Harness:
                 'echo "RC=$?"',
                 "ls -l /mnt/ubuntu-uki-iso-target/boot/efi/EFI/Linux/ 2>/dev/null",
                 "cat /mnt/ubuntu-uki-iso-target/etc/kernel/cmdline",
-                # The kernel is not in the payload: it is installed from the
-                # medium with apt, so whether it landed is a separate question
+                # The kernel and the UKI are not in the payload: they arrive in
+                # the package, so whether they landed is a separate question
                 # from whether the installer returned 0. Prefixed so that the
                 # check below cannot be satisfied by the installer's own chatter
                 # echoing the release back.
                 "ls /mnt/ubuntu-uki-iso-target/lib/modules/ | sed 's/^/modules:/'",
-                # The hook that makes the kernel package install above build a
-                # UKI at all. Checked separately from the UKI itself, so that a
-                # missing trigger is reported as a missing trigger rather than
-                # as "no UKI appeared".
-                "ls /mnt/ubuntu-uki-iso-target/etc/kernel/postinst.d/ 2>/dev/null",
+                # The UKI that boots must be the one the package carried, not
+                # one something rebuilt here. Comparing the ESP's copy against
+                # the package's copy — both on the target, so this is a read —
+                # is the whole claim of the design in one command.
+                "B=/mnt/ubuntu-uki-iso-target;"
+                " PKG=$(cd $B/usr/lib/ubuntu-uki-iso && sha256sum uki.efi | cut -d' ' -f1);"
+                " ESP=$(find $B/boot/efi/EFI/Linux -name '*.efi'"
+                " -exec sha256sum {} \\; | cut -d' ' -f1);"
+                ' [ "$PKG" = "$ESP" ] && echo uki-identical || echo "uki-differs $PKG $ESP"',
+                # Nothing on this machine may build a UKI: the plugins and the
+                # postinst trigger that would call kernel-install are
+                # deliberately absent. Present here would mean two artifacts
+                # racing for the same path.
+                "ls /mnt/ubuntu-uki-iso-target/etc/kernel/postinst.d/ 2>/dev/null"
+                " | grep -c . | sed 's/^/postinst-hooks:/'",
                 "test -d /mnt/ubuntu-uki-iso-target/var/tmp/kernel-debs"
                 " && echo LEFTOVER || echo deb-staging-cleaned",
                 "efibootmgr | grep -i ubuntu-uki-iso",
@@ -863,17 +876,23 @@ class Harness:
             [
                 Check("installer exited 0", "installer did not exit 0", "RC=0"),
                 Check(
-                    "the kernel package installed",
-                    "the target has no /lib/modules/<release> — the kernel was not "
-                    "installed, so the UKI has no modules to load",
+                    "the package's modules landed",
+                    "the target has no /lib/modules/<release> — the package's payload "
+                    "was not installed, so the UKI has no modules to load",
                     r"modules:\S*-ubuntu-uki-iso",
                     regex=True,
                 ),
                 Check(
-                    "the kernel-install trigger is installed",
-                    "no postinst hook in the target: installing a kernel package "
-                    "there would build no UKI, now or on any future upgrade",
-                    "zz-ubuntu-uki-iso",
+                    "the UKI on the ESP is the one the package carried",
+                    "the ESP's UKI differs from the package's: something rebuilt it, "
+                    "or the copy onto the ESP was not faithful",
+                    "uki-identical",
+                ),
+                Check(
+                    "nothing on the target would build a UKI",
+                    "a postinst hook is installed: a kernel package installed here "
+                    "would build a second UKI and race the prebuilt one",
+                    "postinst-hooks:0",
                 ),
                 Check(
                     "the staged packages were cleaned up",
@@ -881,11 +900,10 @@ class Harness:
                     "deb-staging-cleaned",
                 ),
                 Check(
-                    "the target's cmdline names its own root filesystem",
-                    "the cmdline still carries a placeholder: the UKI built from it "
-                    "would panic at boot looking for a filesystem that does not exist",
-                    r"root=UUID=[0-9a-f]{8}-",
-                    regex=True,
+                    "the target's cmdline names the partition it was installed to",
+                    "the cmdline does not carry the fixed PARTUUID: the UKI and the "
+                    "partition table disagree about which filesystem is the root",
+                    ROOT_PARTUUID,
                 ),
                 Check(
                     "a UKI landed on the ESP",

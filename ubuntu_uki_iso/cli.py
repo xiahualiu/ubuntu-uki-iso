@@ -76,7 +76,7 @@ def _add_build(subparsers: argparse._SubParsersAction) -> None:
     )
     build.add_argument(
         "step",
-        choices=["kernel", "rootfs", "uki", "squashfs", "iso", "all"],
+        choices=["kernel", "rootfs", "uki", "uki-target", "squashfs", "iso", "all"],
         help="which step to run",
     )
     build.add_argument(
@@ -184,6 +184,8 @@ def cmd_build(args: argparse.Namespace, layout: Layout, console: Console) -> int
         container.run_step("ubuntu_uki_iso.build.rootfs", args.variant or "all")
     elif args.step == "uki":
         container.run_step("ubuntu_uki_iso.build.uki")
+    elif args.step == "uki-target":
+        container.run_step("ubuntu_uki_iso.build.uki_target")
     elif args.step == "squashfs":
         container.run_step("ubuntu_uki_iso.build.squashfs")
     elif args.step == "iso":
@@ -193,6 +195,10 @@ def cmd_build(args: argparse.Namespace, layout: Layout, console: Console) -> int
             ("ubuntu_uki_iso.build.kernel", ()),
             ("ubuntu_uki_iso.build.rootfs", ("all",)),
             ("ubuntu_uki_iso.build.uki", ()),
+            # The target's UKI needs only the kernel packages and the packaged
+            # data — not either rootfs — but it belongs here, between the UKI
+            # the ISO boots and the images that are squashed.
+            ("ubuntu_uki_iso.build.uki_target", ()),
             ("ubuntu_uki_iso.build.squashfs", ()),
             ("ubuntu_uki_iso.build.iso", ()),
         ):

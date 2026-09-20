@@ -1,14 +1,18 @@
-"""Parsing an ISO's partition table, to prove it is actually hybrid.
+"""Reading GPT partition tables — from an ISO, and from a disk being installed.
 
-This exists because of a specific, silent failure. The flag combination the
-design notes named for a UEFI-only hybrid ISO — ``-e efi.img -no-emul-boot
+The ISO use exists because of a specific, silent failure. The flag combination
+the design notes named for a UEFI-only hybrid ISO — ``-e efi.img -no-emul-boot
 -isohybrid-gpt-basdat`` — produces no MBR and no GPT at all. The resulting ISO
 has a perfectly good El Torito UEFI entry, boots fine from a CD or from
 ``qemu -cdrom``, and is completely invisible to firmware when written to a USB
-stick. Nothing about the build reports a problem.
+stick. Nothing about the build reports a problem. So the build parses what it
+produced and refuses to hand over an image that would only work on one of the
+two kinds of medium.
 
-So the build parses what it produced and refuses to hand over an image that
-would only work on one of the two kinds of medium.
+The installer use is the same idea one step later: it reads the table it just
+wrote back off the disk, because the root partition's GUID is what the prebuilt
+UKI's command line names, and a GUID that came out wrong is a machine that
+installs cleanly and panics at first boot.
 """
 
 from __future__ import annotations
@@ -28,6 +32,10 @@ _MAX_ENTRIES = 512  # the spec allows 128 by default; this only bounds a corrupt
 @dataclass(frozen=True)
 class Partition:
     type_guid: str
+    #: The partition's own GUID — what ``root=PARTUUID=`` names, and what the
+    #: installer writes from settings.ROOT_PARTUUID. Distinct from type_guid,
+    #: which is shared by every partition of the same kind.
+    unique_guid: str
     first_lba: int
     last_lba: int
     name: str
@@ -39,6 +47,19 @@ class Partition:
     @property
     def size_mb(self) -> int:
         return self.size_bytes // (1024 * 1024)
+
+    @property
+    def partuuid(self) -> str:
+        """The unique GUID as the kernel and udev spell it: lowercase.
+
+        ``_format_guid`` upper-cases, because that is how the type GUIDs are
+        written in this module and comparing against them is easier when one
+        case is settled. The kernel's own parser is case-insensitive, but
+        ``/dev/disk/by-partuuid/`` is not, and neither is anything that
+        resolves through it — so anything compared against a real PARTUUID
+        comes through here.
+        """
+        return self.unique_guid.lower()
 
 
 @dataclass(frozen=True)
@@ -54,6 +75,18 @@ class PartitionTable:
         for partition in self.partitions:
             if partition.type_guid == ESP_TYPE_GUID:
                 return partition
+        return None
+
+    def by_number(self, number: int) -> Partition | None:
+        """The nth partition, numbered as sgdisk and blkid number them.
+
+        Valid because :func:`parse` skips only *empty* entries, and neither a
+        disk this project partitions nor an ISO it builds has a gap in the
+        middle of its table. A table with a hole would make this wrong, so it
+        returns ``None`` rather than guessing if the count is short.
+        """
+        if 1 <= number <= len(self.partitions):
+            return self.partitions[number - 1]
         return None
 
 
@@ -93,7 +126,15 @@ def parse(path: Path) -> PartitionTable:
             continue
         first, last = struct.unpack_from("<QQ", entry, 32)
         name = entry[56:128].decode("utf-16-le", errors="replace").rstrip("\0")
-        partitions.append(Partition(_format_guid(entry[:16]), first, last, name))
+        partitions.append(
+            Partition(
+                type_guid=_format_guid(entry[:16]),
+                unique_guid=_format_guid(entry[16:32]),
+                first_lba=first,
+                last_lba=last,
+                name=name,
+            )
+        )
 
     return PartitionTable(has_mbr, tuple(partitions))
 

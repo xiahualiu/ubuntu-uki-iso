@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from .. import pe
+from ..config import host_packages
 from ..errors import BuildError
 from ..log import Console, get_console
 from ..paths import Layout
@@ -85,9 +86,12 @@ def _harvest(staging: Path) -> Path:
 
     From ``EFI/Linux/``, where systemd's ``90-uki-copy.install`` puts it, named
     after the entry token and the version — not from the root of the staging
-    directory. The fallback plugin's copy of the same file
-    (``EFI/BOOT/BOOTX64.EFI``) is in there too, so harvesting by directory is
-    what keeps the two from being confused for each other.
+    directory.
+
+    Globbing that directory rather than assuming a filename is deliberate: the
+    name is ``<machine-id>-<version>.efi`` when kernel-install has a machine-id
+    to use and ``<version>.efi`` when it does not, and this rootfs is built in
+    a container whose machine-id is not the target's.
     """
     produced = sorted((staging / "EFI/Linux").glob("*.efi"))
     if not produced:
@@ -156,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     layout = Layout()
     runner = Runner(dry_run=False, console=console)
     runner.require("chroot", "mount", "umount", "kernel-install")
+    runner.require_packages(*host_packages("build"))
     build(layout, console, runner)
     console.step("uki: done")
     return 0

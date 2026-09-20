@@ -21,12 +21,9 @@ between a booting machine and a dead one.
 
 from __future__ import annotations
 
-import os
 import shutil
-import sys
 from pathlib import Path
 
-from .. import settings
 from ..log import Console, get_console
 
 #: The firmware's default path, relative to the boot root.
@@ -137,33 +134,3 @@ def _preserve_foreign_loader(destination: Path, console: Console) -> None:
 
     shutil.copyfile(destination, backup)
     console.info(f"preserved the existing loader at {backup.name}")
-
-
-def main(argv: list[str] | None = None) -> int:
-    """kernel-install plugin entry point."""
-    argv = sys.argv if argv is None else argv
-    console = get_console()
-
-    if len(argv) < 3:
-        console.error("usage: 95-ubuntu-uki-iso-fallback.install <verb> <kernel-version> ...")
-        return 1
-
-    verb, kernel_version = argv[1], argv[2]
-    if verb != "add":
-        return 0
-
-    boot_root = Path(os.environ.get("KERNEL_INSTALL_BOOT_ROOT", settings.ESP_MOUNT))
-
-    try:
-        installed = install(boot_root, kernel_version, console=console)
-    except OSError as exc:
-        console.error(str(exc))
-        return 1
-
-    if installed is not None:
-        console.info(f"{installed.relative_to(boot_root)} <- UKI for {kernel_version}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

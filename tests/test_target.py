@@ -1,10 +1,10 @@
 """What the installer finds on the installation medium.
 
 Two things have to be there for an install to be possible: the rootfs payload,
-and the kernel packages that go onto the target. They are found together,
-because they arrive together — the ISO's ``/payload`` directory — and the
-failure to find either has to be loud. An install that starts without them
-formats a disk and then has nothing to put on it.
+and the package that carries the kernel and the UKI onto the target. They are
+found together, because they arrive together — the ISO's ``/payload``
+directory — and the failure to find either has to be loud. An install that
+starts without them formats a disk and then has nothing to put on it.
 """
 
 from __future__ import annotations
@@ -25,8 +25,8 @@ from ubuntu_uki_iso.log import Console
 from ubuntu_uki_iso.paths import Layout
 from ubuntu_uki_iso.proc import Runner
 
-IMAGE_DEB = "linux-image-7.0.14-ubuntu-uki-iso_7.0.14-ubuntu-uki-iso-1_amd64.deb"
-HEADERS_DEB = "linux-headers-7.0.14-ubuntu-uki-iso_7.0.14-ubuntu-uki-iso-1_amd64.deb"
+RELEASE = "7.0.14-ubuntu-uki-iso"
+UKI_DEB = f"{settings.PACKAGE_NAME}_{RELEASE}_amd64.deb"
 
 
 def _payload_directory(tmp_path: Path, *, packages: bool = True) -> Path:
@@ -36,8 +36,7 @@ def _payload_directory(tmp_path: Path, *, packages: bool = True) -> Path:
     squashfs = payload / paths.PAYLOAD_SQUASHFS.name
     squashfs.write_bytes(b"not really a squashfs")
     if packages:
-        (payload / "debs" / IMAGE_DEB).write_bytes(b"")
-        (payload / "debs" / HEADERS_DEB).write_bytes(b"")
+        (payload / "debs" / UKI_DEB).write_bytes(b"")
     return squashfs
 
 
@@ -91,7 +90,7 @@ def test_a_payload_that_does_not_exist_is_refused(
 # ---------------------------------------------------------------------------
 
 
-def test_the_packages_are_found_beside_the_payload(
+def test_the_package_is_found_beside_the_payload(
     tmp_path: Path, runner: RecordingRunner, console: Console
 ) -> None:
     squashfs = _payload_directory(tmp_path)
@@ -99,23 +98,23 @@ def test_the_packages_are_found_beside_the_payload(
 
     find_payload(ctx)
 
-    assert len(ctx.debs) == 2
-    assert ctx.image_deb is not None
-    assert ctx.image_deb.name == IMAGE_DEB
+    assert len(ctx.debs) == 1
+    assert ctx.uki_package is not None
+    assert ctx.uki_package.name == UKI_DEB
 
 
-def test_a_medium_without_packages_is_refused(
+def test_a_medium_without_the_package_is_refused(
     tmp_path: Path, runner: RecordingRunner, console: Console
 ) -> None:
-    """The payload carries no kernel, so this is not a detail.
+    """The payload carries no kernel and no UKI, so this is not a detail.
 
-    Without these packages the machine gets a root filesystem and no kernel to
-    boot: the install would have to be refused before it formatted anything.
+    Without this package the machine gets a root filesystem and nothing to boot:
+    the install would have to be refused before it formatted anything.
     """
     squashfs = _payload_directory(tmp_path, packages=False)
     ctx = _context(runner, console, tmp_path, payload=squashfs)
 
-    with pytest.raises(BuildError, match="no kernel packages"):
+    with pytest.raises(BuildError, match="no packages"):
         find_payload(ctx)
 
 
@@ -134,7 +133,7 @@ def test_a_dry_run_reports_the_missing_packages_without_dying(tmp_path: Path) ->
     find_payload(ctx)
 
     assert ctx.debs == []
-    assert "no kernel packages" in err.getvalue()
+    assert "no packages" in err.getvalue()
 
 
 def test_the_volume_label_is_the_one_the_iso_is_burned_with(
@@ -160,10 +159,10 @@ def test_the_fstab_mounts_the_esp_where_kernel_install_looks(
     """The invariant that ties the installed system to its boot root.
 
     Two things are written at different times and have to agree: the fstab
-    mounts the ESP, and the kernel package's postinst hook points
-    kernel-install's boot root at the same directory. If they drift apart the
-    UKI is written somewhere the firmware never looks, and nothing says so
-    until the machine is rebooted.
+    mounts the ESP, and the UKI package's postinst writes to that same
+    directory — both from ``settings.ESP_MOUNT``. If they drift apart the UKI
+    is written somewhere the firmware never looks, and nothing says so until
+    the machine is rebooted.
     """
     # Context.target is the real mount point the installer uses, which no test
     # may create. Read at call time, so it can be pointed at tmp_path.

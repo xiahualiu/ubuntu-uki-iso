@@ -1,0 +1,86 @@
+# Packages this tool needs on the machine it runs on.
+#
+# Not to be confused with live.list and installed.list, which describe the
+# systems this project *builds*. This one describes the machine doing the
+# building — a CI runner, or a container on one.
+#
+# It is a declaration, not an installer: `ubuntu-uki-iso` checks these with
+# dpkg-query and stops with a message naming what is missing. It never installs
+# anything, because it runs on machines it does not own and because changing
+# them would change every other job that shares them.
+#
+# build/Dockerfile installs a superset of this list, and a test asserts that it
+# still does — the image is one way to satisfy the declaration, not the
+# declaration itself.
+
+# --- group: build ----------------------------------------------------------
+# Everything needed to produce the artifacts: the kernel, the two rootfs
+# images, the UKIs and the ISO.
+
+# --- kernel build ----------------------------------------------------------
+# The standard dep set, plus dwarves for pahole (CONFIG_DEBUG_INFO_BTF stays
+# on) and debhelper/fakeroot/dpkg-dev/devscripts/equivs for `make bindeb-pkg`,
+# which shells out to scripts/package/mkdebian.
+build-essential
+bc
+bison
+flex
+libssl-dev
+libelf-dev
+libncurses-dev
+dwarves
+debhelper
+fakeroot
+dpkg-dev
+devscripts
+equivs
+
+# --- fetching the source ---------------------------------------------------
+git
+wget
+curl
+ca-certificates
+gnupg
+ubuntu-keyring
+
+# --- image build -----------------------------------------------------------
+# mmdebstrap bootstraps both rootfs images; xorriso makes the hybrid ISO;
+# mtools and dosfstools build the FAT EFI image without a loop device or a
+# mount. sbsigntool is kept because a future Secure Boot story would need it.
+mmdebstrap
+xorriso
+squashfs-tools
+mtools
+dosfstools
+sbsigntool
+
+# --- the UKIs --------------------------------------------------------------
+# dracut builds the initramfs, ukify assembles the UKI, and systemd-boot-efi
+# provides /usr/lib/systemd/boot/efi/linuxx64.efi.stub — the PE stub the UKI is
+# built around, without installing a bootloader.
+dracut
+systemd-ukify
+systemd-boot-efi
+
+# --- packing and unpacking ------------------------------------------------
+# dpkg-deb extracts the kernel package's files and builds the UKI package. It
+# is used to read archives, never to install them.
+dpkg-dev
+zstd
+xz-utils
+bzip2
+cpio
+kmod
+rsync
+
+# --- runtime ---------------------------------------------------------------
+# Every step in this project is a Python module, so the interpreter is the
+# runtime rather than a transitive detail.
+python3
+
+# --- group: test -----------------------------------------------------------
+# Only needed to run the QEMU suite. Kept separate because a machine building a
+# kernel should not be told it is missing QEMU.
+qemu-system-x86
+ovmf
+expect

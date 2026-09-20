@@ -32,12 +32,37 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypeVar
 
-from .errors import CommandFailed, NotConfirmed, ToolMissing
+from .errors import CommandFailed, NotConfirmed, PackagesMissing, ToolMissing
 from .log import Console, get_console
 
 #: What a deferred value will turn out to be once the dry run is over. See
 #: :meth:`Runner.value_or`.
 _T = TypeVar("_T")
+
+
+def _package_installed(name: str) -> bool:
+    """Whether dpkg has this package installed.
+
+    ``${db:Status-Abbrev}`` is two characters for a package in the desired
+    state: ``ii`` installed, ``iU`` unpacked-but-unconfigured, and so on. Only
+    ``ii`` counts — a half-configured package is one whose binaries may not be
+    there yet.
+
+    Anything unexpected — no dpkg, a timeout, a name dpkg has never heard of —
+    answers "not installed", because that is the answer that produces a
+    message rather than a later failure with no explanation.
+    """
+    try:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${db:Status-Abbrev}", name],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.startswith("ii")
 
 
 @dataclass(frozen=True)
@@ -87,6 +112,25 @@ class Runner:
         missing = [tool for tool in tools if shutil.which(tool) is None]
         if missing:
             raise ToolMissing(*missing)
+
+    @staticmethod
+    def require_packages(*packages: str) -> None:
+        """Fail with one message naming every missing apt package.
+
+        Read-only, and deliberately so: ``dpkg-query`` is asked what is
+        installed and nothing is installed. This tool runs on machines it does
+        not own — a CI runner, a container on one — and installing packages
+        onto them would be both surprising and a change to an environment every
+        other job shares. What it does instead is name the command, and leave
+        running it to whoever owns the machine.
+
+        Packages rather than commands, because that is the granularity the
+        requirement is declared at (:func:`ubuntu_uki_iso.config.host_packages`)
+        and because the fix is a package-level act.
+        """
+        missing = [name for name in packages if not _package_installed(name)]
+        if missing:
+            raise PackagesMissing(missing)
 
     @staticmethod
     def have(tool: str) -> bool:

@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 from .. import settings
-from ..config import package_list
+from ..config import host_packages, package_list
 from ..errors import BuildError
 from ..log import Console, get_console
 from ..paths import Layout
@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     runner.require("mmdebstrap", "chroot")
+    runner.require_packages(*host_packages("build"))
     layout.require_dirs()
 
     # Both hooks need the built packages — the live one to install them, the
