@@ -8,7 +8,7 @@ The package has three faces, and the subpackage layout follows them:
 
 :mod:`~ubuntu_uki_iso.build`
     Producing the artifacts — kernel, rootfs images, UKI, squashfs, ISO. Runs
-    in a container on the build host.
+    inside the build container the environment provides (build/Dockerfile).
 
 :mod:`~ubuntu_uki_iso.installer`
     Writing the result onto a machine's storage. Runs in the live environment

@@ -1,4 +1,5 @@
-"""Build the ISO's own UKI.
+"""
+Build the ISO's own UKI.
 
 The UKI is produced by running ``kernel-install`` *inside the live rootfs*, not
 by calling ukify directly with flags assembled here. That matters: with

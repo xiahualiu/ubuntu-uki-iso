@@ -1,0 +1,15 @@
+# The Dockerfile has no COPY — nothing in the build context is needed, and the
+# large things live here. Without this, `docker build .` sends out/ (kernel
+# source, rootfs trees, ISOs), the git history and the virtualenv to the daemon.
+
+out/
+.git/
+.venv/
+build/lib/
+dist/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

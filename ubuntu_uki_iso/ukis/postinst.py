@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 from .. import settings
-from ..errors import ConfigError, XiahualabError
+from ..errors import ConfigError
 from ..log import Console, get_console
 from . import fallback, retention
 
@@ -152,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         install(Path(settings.ESP_MOUNT), console=console)
-    except XiahualabError as exc:
+    except ConfigError as exc:
         console.error(str(exc))
         return 1
 

@@ -44,12 +44,14 @@ dev = [
 
 [project.scripts]
 ubuntu-uki-iso = "ubuntu_uki_iso.cli:main"
+ubuntu-uki-kernel = "ubuntu_uki_iso.kernel.build:main"
+ubuntu-uki-build = "ubuntu_uki_iso.uki.cli:main"
 
 [project.urls]
 Documentation = "https://github.com/ubuntu-uki-iso/ubuntu-uki-iso#readme"
 
 [tool.setuptools]
-include-package-data = true
+include-package-data = false
 
 # Flat layout: the package sits at the repository root. `include` is explicit
 # because with `where = ["."]` setuptools would otherwise also consider
@@ -59,15 +61,8 @@ include-package-data = true
 where = ["."]
 include = ["ubuntu_uki_iso*"]
 
-# The config data is not code — Kconfig fragments, package lists, cmdline
-# templates and dracut configuration are files a person reads and edits, and
-# they stay files. This is what puts them in the wheel so `pip install` on
-# another machine produces something that can actually build.
-[tool.setuptools.package-data]
-ubuntu_uki_iso = ["data/*/*", "data/*"]
-
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "ubuntu_uki_iso/kernel/tests"]
 # `tests` is on the path so the binary-structure builders in tests/helpers.py
 # can be imported by name from the test modules that use them.
 pythonpath = [".", "tests"]

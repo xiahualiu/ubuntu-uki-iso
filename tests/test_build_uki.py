@@ -14,10 +14,10 @@ from pathlib import Path
 import pytest
 
 from helpers import make_uki
-from ubuntu_uki_iso.build.uki import _harvest, _verify
 from ubuntu_uki_iso.errors import BuildError
 from ubuntu_uki_iso.log import Console
 from ubuntu_uki_iso.paths import Layout
+from ubuntu_uki_iso.uki.live import _harvest, _verify
 
 
 def _staged(staging: Path, relative: str, cmdline: bytes) -> Path:

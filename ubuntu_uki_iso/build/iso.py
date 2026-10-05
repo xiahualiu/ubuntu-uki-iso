@@ -1,4 +1,5 @@
-"""Assemble the UEFI-bootable hybrid ISO with xorriso.
+"""
+Assemble the UEFI-bootable hybrid ISO with xorriso.
 
 Layout produced::
 

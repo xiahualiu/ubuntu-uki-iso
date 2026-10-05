@@ -17,8 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from .. import paths, settings
-from ..config import boot
 from ..errors import BuildError
+from ..uki import config as boot
 from . import device
 from .context import Context
 

@@ -1,4 +1,5 @@
-"""Build the target's UKI here, and pack it the way it will be installed.
+"""
+Build the target's UKI here, and pack it the way it will be installed.
 
 The UKI is one PE binary containing the kernel, the initramfs and the command
 line. Building it here rather than on the machine that boots it is what makes
@@ -16,7 +17,7 @@ What it costs is the ability to look at the machine's hardware. That is not a
 detail: dracut's host-only mode could see the target's disks, and this build
 cannot, because the machine running it is a container on a CI runner. So the
 initramfs is built from an explicit list of modules
-(``data/dracut/20-uki-build.conf``), and the list is checked here rather than
+(``uki/config.py:dracut_conf``), and the list is checked here rather than
 trusted — see :func:`_verify_initramfs`.
 
 The package contents are deliberate, and one omission is worth stating: there
@@ -31,13 +32,13 @@ import shutil
 import sys
 from pathlib import Path
 
-from .. import paths, settings
-from ..config import boot
+from .. import settings
 from ..errors import BuildError
 from ..log import Console, get_console
 from ..paths import Layout
 from ..proc import Runner
 from ..shim import PACKAGE_LIB, render_shim
+from . import config as boot
 
 #: Scratch, under the workspace's ``out/work``. Three subdirectories, and the
 #: separation is what keeps the omitted vmlinuz omitted: the extracted tree is
@@ -94,7 +95,7 @@ def _verify_initramfs(initramfs: Path, console: Console, runner: Runner) -> None
     """Prove the module list actually made it into the initramfs.
 
     This is the check that replaces "dracut looked at the machine". The list in
-    ``20-uki-build.conf`` is a claim about hardware this build has never seen,
+    ``dracut_conf("uki-build")`` is a claim about hardware this build has never seen,
     and the failure it guards against — a UKI that boots to a kernel which
     cannot find its root filesystem — is invisible until the machine reboots.
     So the claim is read back out of the artifact instead of being trusted.
@@ -114,7 +115,7 @@ def _verify_initramfs(initramfs: Path, console: Console, runner: Runner) -> None
         raise BuildError(
             f"the initramfs has no {' '.join(missing)} module(s).\n"
             "\n"
-            "They are named in data/dracut/20-uki-build.conf, and this build cannot\n"
+            "They are named in uki/config.py:dracut_conf, and this build cannot\n"
             "probe the target's hardware — the list is the only thing keeping the\n"
             "machine able to see its own disks. Either the list is wrong for the\n"
             "hardware, or dracut did not honour it."
@@ -129,7 +130,7 @@ def _verify_initramfs(initramfs: Path, console: Console, runner: Runner) -> None
             "More to the point: it means the whitelist was not applied, so the\n"
             "initramfs is dracut's default set rather than the one this project\n"
             "declared — and the modules that ought to be there cannot be assumed\n"
-            "either. Check that drivers+= in data/dracut/20-uki-build.conf is honoured."
+            "either. Check that drivers+= in uki/config.py:dracut_conf is honoured."
         )
 
     console.ok(
@@ -246,7 +247,7 @@ def build(layout: Layout, console: Console, runner: Runner) -> Path:
     release = layout.kernel_release()
     image = layout.kernel_image_deb()
 
-    stage = layout.work / STAGE
+    stage = layout.root / STAGE
     if stage.exists():
         shutil.rmtree(stage)
     (stage / _EXTRACTED).mkdir(parents=True)
@@ -260,9 +261,10 @@ def build(layout: Layout, console: Console, runner: Runner) -> Path:
     runner.run("dpkg-deb", "-x", str(image), str(stage / _EXTRACTED), check=True, quiet=True)
 
     console.step("uki-target: dracut")
-    console.grey("not host-only, and limited to the modules in 20-uki-build.conf")
+    console.grey("not host-only, and limited to the drivers in uki.config.dracut_conf")
     moddir = stage / _EXTRACTED / "lib/modules" / release
     initramfs = stage / f"initramfs-{release}.img"
+    conf = boot.dracut_conf("uki-build").write(stage / "dracut.conf")
     runner.run(
         "dracut",
         "--no-hostonly",
@@ -272,7 +274,7 @@ def build(layout: Layout, console: Console, runner: Runner) -> Path:
         # both that the last path component is the kernel version and that the
         # parent ends in /lib/modules/.
         f"--kmoddir={moddir}",
-        f"--conf={paths.data_file('dracut', '20-uki-build.conf')}",
+        f"--conf={conf}",
         str(initramfs),
         check=True,
     )

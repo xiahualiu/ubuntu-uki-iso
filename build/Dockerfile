@@ -6,8 +6,11 @@
 # that needs root — mmdebstrap, chroot, kernel-install, mount — runs in here
 # instead. That is a hard constraint of this project, not a preference.
 #
-# The `build` stage is the default and is what every `make` target uses. The
-# `test` stage adds QEMU and OVMF and is only used by `make test-vm`.
+# The container is provided to the project, not managed by it: the CLI executes
+# its steps directly, so the project must be launched inside this image. CI
+# builds it from this file and publishes both stages to GHCR — `build` for the
+# build jobs, `test` for the QEMU job — and the README carries the `docker run`
+# recipe (capabilities included) for running it by hand.
 
 FROM ubuntu:26.04 AS build
 
@@ -17,7 +20,7 @@ ENV LC_ALL=C.UTF-8
 # --- Kernel build -----------------------------------------------------------
 # flex/bison/bc/libssl/libelf/libncurses are the standard kernel dep set.
 # dwarves provides pahole, which is only needed because CONFIG_DEBUG_INFO_BTF
-# stays on (see ubuntu_uki_iso/data/kernel/config-trim.fragment on why it leaves it
+# stays on (see ubuntu_uki_iso/kernel/config.py on why it leaves it
 # alone). debhelper/fakeroot/dpkg-dev/build-essential are what `make
 # bindeb-pkg` shells out to via scripts/package/mkdebian.
 #

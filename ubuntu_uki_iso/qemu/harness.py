@@ -69,7 +69,7 @@ from ..settings import (
 
 # -- the machine under test -------------------------------------------------
 
-#: The container's qemu-system-x86 package installs this; the ISO is x86_64 and
+#: The test image's qemu-system-x86 package installs this; the ISO is x86_64 and
 #: so is the firmware below.
 QEMU = "qemu-system-x86_64"
 
@@ -567,7 +567,7 @@ class Harness:
         One place, because the command moved from a script in the ISO to a
         console script on PATH and will move again.
 
-        ``UBUNTU_UKI_ISO_EXPECTED_MD_DEVICES`` is set here rather than left at its
+        ``--expected-md-devices`` is set here rather than left at its
         default. The harness emulates a smaller array than the machine has, and
         the installer verifies the member count it finds against what it
         expects — so the two have to agree. Passing it also means the setting
@@ -579,8 +579,8 @@ class Harness:
                 self._data_disks_shell(),
                 " ".join(
                     (
-                        f"UBUNTU_UKI_ISO_EXPECTED_MD_DEVICES={VM_DATA_DISKS}",
                         "ubuntu-uki-iso install",
+                        f"--expected-md-devices={VM_DATA_DISKS}",
                         *leading,
                         "--root-disk",
                         ROOT_DEVICE,

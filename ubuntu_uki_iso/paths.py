@@ -2,8 +2,8 @@
 
 Two different roots, and conflating them is a bug:
 
-*The data root* ships with the package — Kconfig fragments, package lists,
-cmdline templates. It is inside the installed package and is read-only.
+*The configuration* is Python code inside the installed package. Native tool
+configuration files are rendered into the workspace when needed.
 
 *The workspace root* is the checkout being built. All output goes under
 ``<workspace>/out``. On a machine that only installs the wheel, the workspace
@@ -33,30 +33,6 @@ PAYLOAD_SQUASHFS = Path("payload/rootfs.squashfs")
 #: a future kernel update there is a newer version of the same file, so the
 #: medium and the upgrade path carry the same artifact.
 PAYLOAD_DEBS = Path("payload/debs")
-
-
-def data_dir() -> Path:
-    """Packaged configuration data (fragments, lists, templates)."""
-    return Path(__file__).resolve().parent / "data"
-
-
-def data_file(*parts: str) -> Path:
-    """A file under the data directory, checked to exist.
-
-    Checked here rather than at the point of use because a missing data file
-    means the wheel was built wrong, and an obscure failure thirty minutes into
-    a kernel build is the expensive way to find that out.
-    """
-    path = data_dir().joinpath(*parts)
-    if not path.exists():
-        from .errors import ConfigError
-
-        raise ConfigError(
-            f"packaged data file is missing: {path}\n"
-            "This means the installation is incomplete — the data files are "
-            "part of the package. Reinstall, or run from a checkout."
-        )
-    return path
 
 
 def workspace_root(start: Path | None = None) -> Path:

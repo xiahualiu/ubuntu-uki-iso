@@ -14,11 +14,7 @@ produces.
 from __future__ import annotations
 
 
-class XiahualabError(Exception):
-    """Base class. Anything raised deliberately derives from this."""
-
-
-class ConfigError(XiahualabError):
+class ConfigError(Exception):
     """The configuration is internally inconsistent or refers to something
     that does not exist.
 
@@ -28,11 +24,13 @@ class ConfigError(XiahualabError):
     """
 
 
-class BuildError(XiahualabError):
-    """A build step failed."""
+class BuildError(Exception):
+    """
+    A build step failed.
+    """
 
 
-class ToolMissing(XiahualabError):
+class ToolMissing(Exception):
     """A required command is not on PATH."""
 
     def __init__(self, *tools: str) -> None:
@@ -40,7 +38,7 @@ class ToolMissing(XiahualabError):
         super().__init__("missing required command(s): " + ", ".join(tools))
 
 
-class PackagesMissing(XiahualabError):
+class PackagesMissing(Exception):
     """A required package is not installed.
 
     Distinct from :class:`ToolMissing`, which is about one command: a package
@@ -59,12 +57,12 @@ class PackagesMissing(XiahualabError):
             + ", ".join(self.packages)
             + "\n\nInstall them with:\n    apt-get install -y "
             + " ".join(self.packages)
-            + "\n\nThe list is declared in the package's data/packages/host.list, and the\n"
+            + "\n\nThe list is declared in the package's config/packages.py:host_package_groups, and the\n"
             "tool only ever checks it — see the Requirements section of the README."
         )
 
 
-class CommandFailed(XiahualabError):
+class CommandFailed(Exception):
     """An external command exited nonzero and the caller asked for that to be
     fatal."""
 
@@ -76,7 +74,7 @@ class CommandFailed(XiahualabError):
         super().__init__(f"command failed ({returncode}): {' '.join(argv)}{detail}")
 
 
-class Refusal(XiahualabError):
+class Refusal(Exception):
     """The installer declined to act.
 
     Exits 2. Distinct from every other failure on purpose: a refusal means the
@@ -91,7 +89,7 @@ class Refusal(XiahualabError):
         super().__init__(reason)
 
 
-class NotConfirmed(XiahualabError):
+class NotConfirmed(Exception):
     """A destructive step was reached without the typed confirmation."""
 
     exit_code = 3

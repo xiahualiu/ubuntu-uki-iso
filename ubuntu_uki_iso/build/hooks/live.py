@@ -14,14 +14,14 @@ from __future__ import annotations
 
 import sys
 
-from ...config import boot, dracut_conf, install_conf
 from ...log import get_console
 from ...paths import Layout
+from ...uki import config as boot
+from ...uki.config import dracut_conf, install_conf
 from .common import (
     chroot,
     cleanup,
     install_debs,
-    install_file,
     install_python_package,
     target_argument,
     verify_kernel_installed,
@@ -61,13 +61,13 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- boot configuration -----------------------------------------------
     console.step("  hook(live): boot configuration")
-    install_file(install_conf(), target / "etc/kernel/install.conf")
+    write_file(target / "etc/kernel/install.conf", install_conf().render())
 
     # The rendered live cmdline, not the template: the volume label has to be
     # concrete here, because the ISO is built with that exact label and dracut
     # will search for it by name.
     write_file(target / "etc/kernel/cmdline", boot.cmdline_live() + "\n")
-    install_file(dracut_conf("live"), target / "etc/dracut.conf.d/00-live.conf")
+    dracut_conf("live").write(target / "etc/dracut.conf.d/00-live.conf")
     console.info(f"  cmdline: {boot.cmdline_live()}")
 
     # --- the installer ----------------------------------------------------

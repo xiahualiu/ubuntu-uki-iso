@@ -1,4 +1,5 @@
-"""Build the two rootfs images with mmdebstrap.
+"""
+Build the two rootfs images with mmdebstrap.
 
 ``--variant=minbase`` is the smallest starting point that is still a working
 dpkg/apt system; everything else is named explicitly. Recommends are off,
@@ -50,8 +51,8 @@ def build(
         shutil.rmtree(target)
 
     # The hook runs in mmdebstrap's process, not ours, so it is invoked as a
-    # module rather than called directly. PYTHONPATH is already set in the
-    # container by the entry point.
+    # module rather than called directly. PYTHONPATH and UBUNTU_UKI_ISO_ROOT are
+    # set by build.run_step, and inherited this far down.
     hook = f"python3 -m ubuntu_uki_iso.build.hooks.{variant} $1"
 
     runner.run(

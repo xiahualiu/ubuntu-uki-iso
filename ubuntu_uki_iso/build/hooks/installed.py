@@ -28,14 +28,14 @@ import sys
 from pathlib import Path
 
 from ... import settings
-from ...config import boot, dracut_conf, install_conf
 from ...errors import BuildError
 from ...log import Console, get_console
 from ...paths import Layout
+from ...uki import config as boot
+from ...uki.config import dracut_conf, install_conf
 from .common import (
     chroot,
     cleanup,
-    install_file,
     install_python_package,
     target_argument,
     write_file,
@@ -131,7 +131,7 @@ def verify_packages_resolve(target: Path, layout: Layout, console: Console) -> N
             f"apt-get --simulate said:\n{output.strip()}\n\n"
             "The target installs these from the medium with no apt lists and no\n"
             "network, so every dependency must already be in the payload. Add what\n"
-            "is missing to data/packages/installed.list. If apt itself is what\n"
+            "is missing to config/packages.py:installed_packages. If apt itself is what\n"
             "failed rather than a dependency, that matters more, not less: the\n"
             "same command is what runs on the target."
         )
@@ -147,8 +147,8 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- configuration ----------------------------------------------------
     console.step("  hook(installed): configuration")
-    install_file(install_conf(), target / "etc/kernel/install.conf")
-    install_file(dracut_conf("installed"), target / "etc/dracut.conf.d/10-installed.conf")
+    write_file(target / "etc/kernel/install.conf", install_conf().render())
+    dracut_conf("installed").write(target / "etc/dracut.conf.d/10-installed.conf")
 
     # The rendered command line, not a template: it names a fixed PARTUUID that
     # the installer writes into the partition table, so there is nothing left

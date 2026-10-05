@@ -9,7 +9,6 @@ produces "command not found: systemctl" on a rootfs that has systemd in it.
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -22,12 +21,6 @@ def write_file(path: Path, content: str, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     path.chmod(mode)
-
-
-def install_file(source: Path, destination: Path, mode: int = 0o644) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
-    destination.chmod(mode)
 
 
 def chroot(
@@ -172,8 +165,3 @@ def target_argument(argv: list[str]) -> Path:
     if not target.is_dir():
         raise BuildError(f"the customize hook target is not a directory: {target}")
     return target
-
-
-def host_env() -> dict[str, str]:
-    """Environment for a hook, kept minimal on purpose."""
-    return {"LC_ALL": "C.UTF-8", "PYTHONPATH": os.environ.get("PYTHONPATH", "/work")}

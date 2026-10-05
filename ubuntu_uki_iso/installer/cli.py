@@ -19,7 +19,15 @@ import sys
 from pathlib import Path
 
 from .. import settings
-from ..errors import Refusal, XiahualabError
+from ..errors import (
+    BuildError,
+    CommandFailed,
+    ConfigError,
+    NotConfirmed,
+    PackagesMissing,
+    Refusal,
+    ToolMissing,
+)
 from ..log import Console, get_console
 from ..paths import Layout
 from ..proc import Runner
@@ -54,6 +62,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--data-disks", metavar='"D1 D2 ..."', help="The eight array members, space separated"
+    )
+    parser.add_argument(
+        "--expected-md-devices",
+        type=int,
+        default=settings.EXPECTED_MD_DEVICES,
+        help="Expected RAID member count (default: %(default)s)",
     )
     parser.add_argument(
         "--raid",
@@ -226,7 +240,12 @@ def install(args: argparse.Namespace, console: Console) -> int:
 
     result = preflight.scan(runner, data_disks or [])
     preflight.report(result, runner, args.root_disk, console)
-    preflight.decide(result, args.root_disk, mode)
+    preflight.decide(
+        result,
+        args.root_disk,
+        mode,
+        expected_devices=getattr(args, "expected_md_devices", settings.EXPECTED_MD_DEVICES),
+    )
     preflight.enforce(result, console)
     preflight.check_root_disk(runner, args.root_disk, force=args.force_root_disk)
 
@@ -293,7 +312,14 @@ def main(argv: list[str] | None = None) -> int:
     except Refusal as exc:
         console.refuse(exc.reason)
         return Refusal.exit_code
-    except XiahualabError as exc:
+    except (
+        BuildError,
+        CommandFailed,
+        ConfigError,
+        NotConfirmed,
+        PackagesMissing,
+        ToolMissing,
+    ) as exc:
         console.error(str(exc))
         return 1
     except KeyboardInterrupt:

@@ -1,4 +1,5 @@
-"""Compress both rootfs images into the ISO staging tree.
+"""
+Compress both rootfs images into the ISO staging tree.
 
 ::
 
@@ -9,7 +10,7 @@
 The live path is Debian-conventional, which is why it needs the explicit
 ``rd.live.dir`` and ``rd.live.squashimg`` overrides on the command line:
 dracut's own default is ``/LiveOS/squashfs.img``. Change either path in
-:mod:`ubuntu_uki_iso.paths` and ``data/cmdline/live`` has to change with it.
+:mod:`ubuntu_uki_iso.paths` and ``uki/config.py:live_command_line`` has to change with it.
 """
 
 from __future__ import annotations

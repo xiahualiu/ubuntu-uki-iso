@@ -2,7 +2,7 @@
 
 There are two rootfs images rather than one stripped at install time. Stripping
 during install would make the destructive step also the complicated one, and
-``packages/{live,installed}.list`` only means something if both are built. The
+the live and installed package profiles only means something if both are built. The
 installer stays a copy operation.
 
 These modules are invoked by mmdebstrap, not imported by the CLI::

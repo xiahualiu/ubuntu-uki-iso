@@ -3,12 +3,17 @@ name: build
 # The runner is NOT the target machine. It never has been the machine this
 # image is installed onto, and nothing here may assume it is: the build is
 # hardware-independent by construction, because the driver trim is *declared*
-# (ubuntu_uki_iso/data/kernel/) rather than observed, and the target's
+# (ubuntu_uki_iso/kernel/config.py) rather than observed, and the target's
 # initramfs is built from an explicit module list rather than from a probe.
 #
 # That is also why the runner does not need to be trusted with the array. The
-# build container mounts only the workspace and never /dev, so no build script
-# can reach /dev/sd{a..h} — and the machine that owns them is somewhere else.
+# build jobs run inside the container built from build/Dockerfile, which is
+# given only SYS_ADMIN and the workspace — never /dev, never --privileged, and
+# the machine that owns /dev/sd{a..h} is somewhere else.
+#
+# The `image` job publishes that container to GHCR; every other job that needs
+# it pulls it by the commit SHA (never :latest, so a run always builds in the
+# image built from its own commit). `lint` stays on a GitHub-hosted runner.
 #
 #   - The jobs below are gated so that untrusted events cannot reach the
 #     self-hosted runner. pull_request runs lint only, and it runs on a
@@ -21,15 +26,12 @@ on:
       - 'ubuntu_uki_iso/**'
       - 'tests/**'
       - 'build/**'
+      - '.dockerignore'
       - 'pyproject.toml'
       - '.github/workflows/build.yml'
   pull_request:
   workflow_dispatch:
     inputs:
-      debug_info:
-        description: 'Build the kernel with debug info (slow, ~45 min)'
-        type: boolean
-        default: true
       run_vm_tests:
         description: 'Run the QEMU tests after building the ISO'
         type: boolean
@@ -43,17 +45,65 @@ permissions:
 env:
   # Keeps the squashfs and ISO timestamps deterministic where the tools allow.
   SOURCE_DATE_EPOCH: '1700000000'
-  # Debug info is on unless a workflow_dispatch explicitly turns it off.
-  #
-  # Spelled out rather than used directly as `inputs.debug_info`, because that
-  # input is empty on every other event and GitHub's loose equality reads an
-  # empty input as false — so a release build silently took the fast path and
-  # shipped a kernel that cannot symbolize its own stack traces. It also made
-  # the kernel and iso jobs disagree about the cache key, so a release rebuilt
-  # the kernel twice.
-  DEBUG_INFO: ${{ (github.event_name == 'workflow_dispatch' && inputs.debug_info == false) && 'false' || 'true' }}
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # image — build build/Dockerfile and publish both stages to GHCR. This is the
+  # one job that runs on the host rather than in a container: it needs docker,
+  # and it is where the workspace is reclaimed from the previous run's
+  # root-owned output (container jobs run as root, and their writes land on the
+  # bind-mounted workspace as root).
+  # ---------------------------------------------------------------------------
+  image:
+    name: publish the container image
+    runs-on: [self-hosted, linux, x64]
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # The next checkout runs as the runner user and would fail its `git
+      # clean` on root-owned files left under out/. The mkdir matters: `docker
+      # run -v` on a missing host path creates it root-owned.
+      - name: reclaim workspace ownership
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE"
+          docker run --rm -v "$GITHUB_WORKSPACE:/w" ubuntu:26.04 \
+            chown -R "$(id -u):$(id -g)" /w
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: build the build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/Dockerfile
+          target: build
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/build:latest
+            ghcr.io/${{ github.repository }}/build:${{ github.sha }}
+          cache-from: type=gha,scope=build
+          cache-to: type=gha,scope=build,mode=max
+      - name: build the test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: build/Dockerfile
+          target: test
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/test:latest
+            ghcr.io/${{ github.repository }}/test:${{ github.sha }}
+          cache-from: |
+            type=gha,scope=test
+            type=gha,scope=build
+          cache-to: type=gha,scope=test,mode=max
+
   # ---------------------------------------------------------------------------
   # lint — runs anywhere, on every event including forks.
   # ---------------------------------------------------------------------------
@@ -81,38 +131,34 @@ jobs:
         run: ubuntu-uki-iso test unit
 
   # ---------------------------------------------------------------------------
-  # check-config — the cheap half of a kernel build. Validates that the trim
-  # fragment names real symbols and that nothing on the never-disable list was
-  # disabled. Catches the failure that otherwise costs 45 minutes to discover.
-  # ---------------------------------------------------------------------------
-  check-config:
-    name: check kernel config
-    runs-on: [self-hosted, linux, x64]
-    if: github.event_name != 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - name: install
-        run: pip install -e .
-      - name: validate trim and guard list
-        run: ubuntu-uki-iso doctor
-      - name: no guarded symbol is trimmed
-        run: ubuntu-uki-iso verify
-
-  # ---------------------------------------------------------------------------
   # kernel — expensive, so it runs only when asked or when tagging.
   # ---------------------------------------------------------------------------
   kernel:
     name: build kernel
     runs-on: [self-hosted, linux, x64]
-    needs: [check-config]
+    needs: [image]
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'release'
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ghcr.io/${{ github.repository }}/build:${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: >-
+        --cap-add SYS_ADMIN
+        --security-opt seccomp=unconfined
+        --security-opt apparmor=unconfined
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: install
-        run: pip install -e .
 
       # The kernel build dominates the wall clock. Caching it keyed on the trim
       # fragment means a change to a shell script or the ISO layout does not
@@ -121,11 +167,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: out/kernel
-          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-${{ env.DEBUG_INFO }}
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/kernel/config.py') }}
 
       - name: build
         run: |
-          ubuntu-uki-iso build kernel ${{ env.DEBUG_INFO == 'false' && '--no-debug-info' || '' }}
+          python3 -m ubuntu_uki_iso.cli build kernel
 
       - name: record the release
         id: release
@@ -146,23 +192,38 @@ jobs:
   iso:
     name: build iso
     runs-on: [self-hosted, linux, x64]
-    needs: [check-config]
+    needs: [image]
     if: github.event_name != 'pull_request'
+    permissions:
+      # action-gh-release writes the release; packages: read pulls the image.
+      contents: write
+      packages: read
+    container:
+      image: ghcr.io/${{ github.repository }}/build:${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: >-
+        --cap-add SYS_ADMIN
+        --security-opt seccomp=unconfined
+        --security-opt apparmor=unconfined
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: install
-        run: pip install -e .
 
       - name: restore kernel artifacts
         uses: actions/cache@v4
         with:
           path: out/kernel
-          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-${{ env.DEBUG_INFO }}
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/kernel/config.py') }}
 
       # `build iso` needs a kernel; if the cache missed, build one.
       - name: kernel (cache miss)
-        run: test -s out/kernel/release && echo "kernel present" || ubuntu-uki-iso build kernel
+        run: test -s out/kernel/release && echo "kernel present" || python3 -m ubuntu_uki_iso.cli build kernel
 
       # Every stage the ISO needs is built here, explicitly. It used to run
       # `build iso` alone, which requires the rootfs images, both UKIs and the
@@ -181,27 +242,27 @@ jobs:
             out/iso
           key: >-
             images-${{ hashFiles('ubuntu_uki_iso/**', 'pyproject.toml') }}-${{
-              hashFiles('ubuntu_uki_iso/data/kernel/*') }}
+              hashFiles('ubuntu_uki_iso/kernel/config.py') }}
 
       - name: build the rootfs images
         run: |
           test -d out/rootfs-live && test -d out/rootfs-installed \
-            && echo "rootfs present" || ubuntu-uki-iso build rootfs all
+            && echo "rootfs present" || python3 -m ubuntu_uki_iso.cli build rootfs all
 
       - name: build the UKIs
-        run: test -s out/uki/BOOTX64.EFI && echo "live UKI present" || ubuntu-uki-iso build uki
+        run: test -s out/uki/BOOTX64.EFI && echo "live UKI present" || python3 -m ubuntu_uki_iso.cli build uki
 
       # The target's UKI, packaged with the modules. Built here rather than on
       # the machine that boots it, which is the whole point: the artifact that
       # runs has been built and read back before any disk is touched.
       - name: build the target's UKI package
-        run: ubuntu-uki-iso build uki-target
+        run: python3 -m ubuntu_uki_iso.cli build uki-target
 
       - name: build the squashfs images
-        run: test -s out/iso/payload/rootfs.squashfs && echo "squashfs present" || ubuntu-uki-iso build squashfs
+        run: test -s out/iso/payload/rootfs.squashfs && echo "squashfs present" || python3 -m ubuntu_uki_iso.cli build squashfs
 
       - name: build the ISO
-        run: ubuntu-uki-iso build iso
+        run: python3 -m ubuntu_uki_iso.cli build iso
 
       - name: verify the boot chain
         run: |
@@ -232,35 +293,40 @@ jobs:
             out/kernel/*.deb
           generate_release_notes: true
 
-      # Outputs are written by root inside the build container. Leaving them
-      # root-owned would break the next run on this runner.
-      - name: reclaim ownership
-        if: always()
-        run: ubuntu-uki-iso fix-perms || true
-
   # ---------------------------------------------------------------------------
   # vm-tests — the QEMU proofs. Opt-in, because a full run with no KVM is slow.
   # ---------------------------------------------------------------------------
   vm-tests:
     name: qemu tests
     runs-on: [self-hosted, linux, x64]
-    needs: [iso]
+    needs: [iso, image]
     if: github.event_name == 'workflow_dispatch' && inputs.run_vm_tests
+    permissions:
+      contents: read
+      packages: read
+    container:
+      # The test stage is the build stage plus QEMU, OVMF and expect.
+      image: ghcr.io/${{ github.repository }}/test:${{ github.sha }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: >-
+        --cap-add SYS_ADMIN
+        --security-opt seccomp=unconfined
+        --security-opt apparmor=unconfined
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: install
-        run: pip install -e .
 
       - name: restore kernel artifacts
         uses: actions/cache@v4
         with:
           path: out/kernel
-          key: kernel-${{ hashFiles('ubuntu_uki_iso/data/kernel/*') }}-${{ env.DEBUG_INFO }}
-
-      - name: build the test container
-        run: |
-          docker build --target test -f build/Dockerfile -t ubuntu-uki-iso-test:latest .
+          key: kernel-${{ hashFiles('ubuntu_uki_iso/kernel/config.py') }}
 
       - name: download the ISO
         uses: actions/download-artifact@v4
@@ -269,7 +335,7 @@ jobs:
           path: out
 
       - name: run
-        run: ubuntu-uki-iso test vm
+        run: python3 -m ubuntu_uki_iso.cli test vm
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -277,7 +343,3 @@ jobs:
           name: vm-test-logs
           path: out/vm-logs/
           if-no-files-found: ignore
-
-      - name: reclaim ownership
-        if: always()
-        run: ubuntu-uki-iso fix-perms || true

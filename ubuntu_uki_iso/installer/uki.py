@@ -27,8 +27,8 @@ import shutil
 from pathlib import Path
 
 from .. import pe, settings
-from ..config import boot
 from ..errors import BuildError
+from ..uki import config as boot
 from .context import Context
 
 #: Where the packages are staged inside the target for apt to install.
