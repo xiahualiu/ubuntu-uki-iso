@@ -2,11 +2,10 @@
 
 Each step is a module with a ``main(argv)`` so it can be run standalone::
 
-    python3 -m ubuntu_uki_iso.kernel.build
-    python3 -m ubuntu_uki_iso.build.rootfs live
-    python3 -m ubuntu_uki_iso.uki.live
-    python3 -m ubuntu_uki_iso.build.squashfs
-    python3 -m ubuntu_uki_iso.build.iso
+    python3 -m ubuntu_uki_iso.kernel.build --temp-dir out
+    python3 -m ubuntu_uki_iso.rootfs.build --temp-dir out --mode live
+    python3 -m ubuntu_uki_iso.uki.build --temp-dir out --mode live
+    python3 -m ubuntu_uki_iso.iso.build --temp-dir out
 
 :func:`run_step` is how the CLI launches them, each as a child process in the
 environment the CLI itself is running in. That environment is expected to be a

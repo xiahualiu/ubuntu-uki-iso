@@ -15,7 +15,6 @@ one module holding the entry point beats two that each hold half of it.
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import sys
 
@@ -63,21 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
     _add_test(subparsers)
     _add_housekeeping(subparsers)
 
-    # Not internal, despite being called by a systemd unit rather than a
-    # person: `ubuntu-uki-iso install --bless` refuses to act without the file it
-    # writes, so it is worth being able to find it.
-    subparsers.add_parser(
-        "mark-booted",
-        help="record that this kernel booted (called by xiahualab-mark-booted.service)",
-    )
-
     return parser
 
 
 def _add_build(subparsers: argparse._SubParsersAction) -> None:
     build = subparsers.add_parser(
         "build",
-        help="build the kernel, rootfs images, UKI, squashfs or ISO",
+        help="build the kernel, rootfs/SquashFS images, UKI or ISO",
         description=(
             "Steps run directly in the environment this command is launched in, which is\n"
             "expected to be the build container (build/Dockerfile) — the container is\n"
@@ -86,14 +77,14 @@ def _add_build(subparsers: argparse._SubParsersAction) -> None:
     )
     build.add_argument(
         "step",
-        choices=["kernel", "rootfs", "uki", "uki-target", "squashfs", "iso", "all"],
+        choices=["kernel", "rootfs", "uki", "iso", "all"],
         help="which step to run",
     )
     build.add_argument(
         "variant",
         nargs="?",
         choices=["live", "installed", "all"],
-        help="for `build rootfs`: which image (default all)",
+        help="for rootfs or UKI: which image (rootfs default all; UKI default live)",
     )
 
 
@@ -138,28 +129,36 @@ def cmd_build(args: argparse.Namespace, layout: Layout, console: Console) -> int
     from .build import run_step
 
     if args.step == "kernel":
-        run_step("ubuntu_uki_iso.kernel.build", root=layout.root)
+        run_step("ubuntu_uki_iso.kernel.build", "--temp-dir", str(layout.out), root=layout.root)
     elif args.step == "rootfs":
-        run_step("ubuntu_uki_iso.build.rootfs", args.variant or "all", root=layout.root)
+        run_step(
+            "ubuntu_uki_iso.rootfs.build",
+            "--temp-dir",
+            str(layout.out),
+            "--mode",
+            args.variant or "all",
+            root=layout.root,
+        )
     elif args.step == "uki":
-        run_step("ubuntu_uki_iso.uki.live", root=layout.root)
-    elif args.step == "uki-target":
-        run_step("ubuntu_uki_iso.uki.target", root=layout.root)
-    elif args.step == "squashfs":
-        run_step("ubuntu_uki_iso.build.squashfs", root=layout.root)
+        modes = ("live", "installed") if args.variant == "all" else (args.variant or "live",)
+        for mode in modes:
+            run_step(
+                "ubuntu_uki_iso.uki.build",
+                "--temp-dir",
+                str(layout.out),
+                "--mode",
+                mode,
+                root=layout.root,
+            )
     elif args.step == "iso":
-        run_step("ubuntu_uki_iso.build.iso", root=layout.root)
+        run_step("ubuntu_uki_iso.iso.build", "--temp-dir", str(layout.out), root=layout.root)
     else:  # all
         for module, extra in (
-            ("ubuntu_uki_iso.kernel.build", ()),
-            ("ubuntu_uki_iso.build.rootfs", ("all",)),
-            ("ubuntu_uki_iso.uki.live", ()),
-            # The target's UKI needs only the kernel packages and the packaged
-            # data — not either rootfs — but it belongs here, between the UKI
-            # the ISO boots and the images that are squashed.
-            ("ubuntu_uki_iso.uki.target", ()),
-            ("ubuntu_uki_iso.build.squashfs", ()),
-            ("ubuntu_uki_iso.build.iso", ()),
+            ("ubuntu_uki_iso.kernel.build", ("--temp-dir", str(layout.out))),
+            ("ubuntu_uki_iso.rootfs.build", ("--temp-dir", str(layout.out), "--mode", "all")),
+            ("ubuntu_uki_iso.uki.build", ("--temp-dir", str(layout.out), "--mode", "live")),
+            ("ubuntu_uki_iso.uki.build", ("--temp-dir", str(layout.out), "--mode", "installed")),
+            ("ubuntu_uki_iso.iso.build", ("--temp-dir", str(layout.out))),
         ):
             run_step(module, *extra, root=layout.root)
 
@@ -191,7 +190,7 @@ def _run_pytest(console: Console) -> int:
 
     console.step("unit tests")
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q"],
+        [sys.executable, "-m", "pytest", "--import-mode=importlib", "-q"],
         cwd=Layout().root,
         check=False,
     )
@@ -221,20 +220,6 @@ def cmd_clean(args: argparse.Namespace, layout: Layout, console: Console) -> int
     return 0
 
 
-def cmd_mark_booted(args: argparse.Namespace, layout: Layout, console: Console) -> int:
-    """Record that this kernel reached multi-user.
-
-    Called by ``xiahualab-mark-booted.service``. ``ubuntu-uki-iso install --bless``
-    refuses to act without this file, which is what stops a UKI that has never
-    booted from replacing the firmware fallback.
-    """
-    from .installer.efientry import BOOT_MARKER
-
-    BOOT_MARKER.parent.mkdir(parents=True, exist_ok=True)
-    BOOT_MARKER.write_text(os.uname().release + "\n", encoding="utf-8")
-    return 0
-
-
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -244,7 +229,6 @@ _COMMANDS = {
     "install": cmd_install,
     "test": cmd_test,
     "clean": cmd_clean,
-    "mark-booted": cmd_mark_booted,
 }
 
 

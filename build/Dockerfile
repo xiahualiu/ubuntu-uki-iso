@@ -3,7 +3,7 @@
 # Build environment for ubuntu-uki-iso.
 #
 # Why this exists at all: the build host has no passwordless sudo. Every step
-# that needs root — mmdebstrap, chroot, kernel-install, mount — runs in here
+# that needs root — mmdebstrap and target mounts — runs in here
 # instead. That is a hard constraint of this project, not a preference.
 #
 # The container is provided to the project, not managed by it: the CLI executes
@@ -57,6 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       bzip2 \
       cpio \
       kmod \
+      mdadm \
+      dmsetup \
       rsync \
       debhelper \
       fakeroot \
@@ -75,7 +77,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       squashfs-tools \
       mtools \
       dosfstools \
-      sbsigntool \
       dracut \
       systemd-ukify \
       systemd-boot-efi \

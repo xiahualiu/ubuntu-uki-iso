@@ -1,82 +1,120 @@
-# Ubuntu kernel, UKI and bootstrap LiveUSB
+# Ubuntu UKI LiveUSB
 
-Independent Python subpackages build Ubuntu kernel Debian packages and dracut/ukify images. The existing rootfs, ISO and server installer pipeline remains available. Python subpackages here are not Git submodules.
+Build a custom Ubuntu kernel, two root filesystems and two UKIs, then assemble a UEFI LiveUSB ISO. Boot the live system to install the server SquashFS and its prebuilt UKI onto a target disk.
 
 ```text
 ubuntu_uki_iso/
-  kernel/     source fetching, config.py, validation, compilation, CLI
-  uki/        config.py, standalone initramfs/UKI builder, live and target packaging
-  build/      rootfs, squashfs, hybrid ISO orchestration
-  installer/  server installation and storage checks
+  kernel/     source download, configuration and kernel deb build
+  uki/        kernel-deb-to-EFI build and boot parameters
+  rootfs/     shared live/installed bootstrap and SquashFS builder
+  iso/        hybrid UEFI ISO assembly and verification
+  installer/  payload deployment, disk checks and optional RAID handling
+  qemu/       live boot and installation checks against virtual disks
 ```
 
-Install locally with Python 3.11 or newer:
+## Setup
+
+Python 3.11 or newer is required. Builders check dependencies and report missing packages; they do not install host packages.
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
+source .venv/bin/activate
 ```
 
-Configuration is defined in Python: kernel config overrides in `ubuntu_uki_iso/kernel/config.py` and validation helpers in `ubuntu_uki_iso/kernel/tests/validation.py`, UKI dracut policies and boot parameters in `ubuntu_uki_iso/uki/config.py`, and host/rootfs package profiles in `ubuntu_uki_iso/config/packages.py`. Kernel overrides use a list of config entries and a render function; UKI and package profiles use frozen dataclasses. Kernel config overrides are generated in the extracted source tree; dracut configs are written into each build's scratch space or rootfs. Edit the Python definitions rather than generated files.
+| Binary | Entry point | Result |
+|---|---|---|
+| `ubuntu-uki-kernel` | `kernel.build:main` | Kernel image and headers debs |
+| `ubuntu-uki-build` | `uki.build:main` | UKI EFI and initramfs |
+| `ubuntu-uki-rootfs` | `rootfs.build:main` | Rootfs and SquashFS images |
+| `ubuntu-uki-image` | `iso.build:main` | Hybrid LiveUSB ISO |
+| `ubuntu-uki-install` | `installer.cli:main` | Install the payload on a target disk |
 
-## Kernel packages
+The build binaries require `--temp-dir`. Use the same directory throughout. A rootfs build requires root to preserve file ownership. ISO assembly uses mtools and needs no mounts or root privileges.
+
+`build/Dockerfile` provides build dependencies. For local builds install its kernel dependencies and:
 
 ```bash
-ubuntu-uki-kernel --help
-ubuntu-uki-kernel --temp-dir /tmp/kernel-build --jobs 32
-# Equivalent without installing console scripts:
-python3 -m ubuntu_uki_iso.kernel.build --temp-dir /tmp/kernel-build --jobs 32
+sudo apt-get install apt dpkg mmdebstrap ubuntu-keyring squashfs-tools kmod systemd \
+  dracut systemd-ukify systemd-boot-efi mdadm dmsetup zstd xorriso dosfstools mtools
 ```
 
-Every kernel build starts by checking kernel build packages (including build-essential and development libraries) and available disk space before fetching sources. It does not install missing dependencies; errors name missing packages and an apt install command. There are no preflight-only or config-only CLI modes.
-
-Source is downloaded with `apt-get download linux-source-7.0.0`, extracted, configured from the source tree's `x86_64_defconfig` plus project config overrides, and built with `make bindeb-pkg`. This uses the source tarball shipped in an apt **binary deb**, rather than `apt-get source`/deb-src. No separate modules package is downloaded for configuration. The source package is fixed to `linux-source-7.0.0` in settings. The base config is regenerated on every build before applying project config overrides. Use a fresh `--temp-dir` when changing source versions. The overrides include drivers detected on the current AMD host (NVMe, AHCI RAID0, Intel I226-V Ethernet, HDA audio, USB-C and Thunderbolt), plus Ubuntu core userspace and container capabilities. The profile was derived from the running `7.0.0-38-generic` config and `localmodconfig`; it is a fixed host profile, not automatic detection on each build. Nouveau is disabled; the NVIDIA driver is built separately against the custom headers. Check the resolved config when changing hardware. Kernel config validation runs separately in `ubuntu_uki_iso/kernel/tests`; builds apply the configuration and compile directly.
-
-Outputs under `--temp-dir`: `kernel/linux-image-*.deb`, `linux-headers-*.deb`, generated configs and the build log. The actual kernel release is read from the source tree and recorded in `<temp-dir>/kernel/release`: 7.0.0 is Ubuntu's package series, not an assertion of the upstream release embedded in the tarball.
-
-## Independent initramfs and UKI
+## Build the ISO
 
 ```bash
-ubuntu-uki-build --help
-ubuntu-uki-build --preflight
-sudo .venv/bin/ubuntu-uki-build --kernel-deb out/kernel/linux-image-RELEASE_VERSION_amd64.deb
-sudo .venv/bin/ubuntu-uki-build --mode installed --kernel-deb /path/kernel.deb --output out/uki/server.efi
-# Equivalent module invocation:
-sudo .venv/bin/python -m ubuntu_uki_iso.uki --kernel-deb /path/kernel.deb
+ubuntu-uki-kernel --temp-dir out --jobs 32
+sudo "$PWD/.venv/bin/ubuntu-uki-rootfs" --temp-dir out --mode all
+ubuntu-uki-build --temp-dir out --mode live
+ubuntu-uki-build --temp-dir out --mode installed
+ubuntu-uki-image --temp-dir out
 ```
 
-Replace the example kernel filename with your built image deb. The default input is selected from `out/kernel`. The deb is extracted into temporary build space and never installed on the host. Dracut uses the extracted kernel modules, non-host-only mode and the selected project configuration; ukify embeds the kernel, initramfs and command line. The EFI sections and embedded command line are verified before publishing the output. The initramfs is retained beside it as `*.initramfs.img` for `lsinitrd` inspection.
+The rootfs and UKI binaries select the image deb matching `kernel/release`; ambiguous inputs are rejected. Both accept `--kernel-deb` for an explicit input. Rootfs defaults to installed mode, accepts `live`, `installed` or `all`, and compresses each image as part of its build. UKI accepts `live` or `installed`.
 
-Default live output: `out/uki/BOOTX64.EFI` (the ISO input). Default installed output: `out/uki/installed.efi`. Use `--cmdline` to supply server boot parameters; otherwise the installed mode uses this project's fixed root PARTUUID. Both commands accept `--workspace`. Native UKI builds need Ubuntu dracut, systemd-ukify, systemd-boot-efi, kmod and zstd; dracut also needs privileges and the userland/firmware appropriate for the target. The existing build container supplies the full environment.
+The checkout command `ubuntu-uki-iso build all` runs this entire pipeline with `out` as the build directory. `build rootfs all`, `build uki live`, `build uki installed` and `build iso` also run individual stages. Run the full pipeline as root inside the provided build container.
 
-## Rootfs and LiveUSB ISO
+The kernel builder extracts the Ubuntu binary `linux-source-7.0.0` package and runs `make bindeb-pkg`. It records the actual upstream release rather than inferring it from Ubuntu's package series. The fixed hardware profile is explained in [docs/kernel-workstation.md](docs/kernel-workstation.md).
 
-Reuse the Ubuntu suite, package definitions and customization code for both rootfs images, but keep separate outputs. The live rootfs contains installer tools and live services; the server payload contains the installed system. Copying the live rootfs verbatim would also copy live-only state and configuration. A shared base with separately applied profiles is possible later; the current separate builds are easier to inspect and test.
+Both rootfs profiles get Ubuntu OS metadata from `base-files` and matching runtime modules copied from the kernel image deb. Kernel maintainer scripts are not run. The live rootfs carries the installer; the installed rootfs carries the server packages. Neither rootfs contains build tools for generating a UKI. Machine IDs and SSH keys are cleared; installed systems generate fresh SSH host keys on first boot.
 
-A live UKI mounts the ISO squashfs with a writable overlay. A server UKI boots a disk root. They share a kernel but need different initramfs policy and command lines.
+Dracut uses `hostonly=no` and explicit driver/module lists. UKIs embed build-host OS metadata, their kernel release and mode-specific command line. Configure packages/services in `rootfs/config.py`, kernel overrides in `kernel/config.py`, and boot flags and dracut policy in `uki/config.py`. `live_command_line()` selects the ISO by volume label; `installed_command_line()` selects `settings.ROOT_LABEL` using GPT PARTLABEL.
 
-After building the kernel:
+Outputs:
+
+```text
+out/kernel/linux-image-*.deb
+out/kernel/linux-headers-*.deb
+out/rootfs-live/
+out/rootfs-installed/
+out/uki/BOOTX64.EFI
+out/uki/uki.efi
+out/iso/live/filesystem.squashfs
+out/iso/payload/rootfs.squashfs
+out/ubuntu_uki_iso.iso
+```
+
+The ISO contains:
+
+```text
+/boot/efi.img              FAT32 image with /EFI/BOOT/BOOTX64.EFI (live UKI)
+/live/filesystem.squashfs  live system
+/payload/rootfs.squashfs   installed system, including runtime modules
+/payload/uki.efi           installed UKI
+/payload/manifest.json     kernel release and SHA256 checksums
+```
+
+The FAT image is also appended as a GPT EFI System Partition for USB firmware. An El Torito UEFI entry supports optical/virtual CD boot. This follows [xorriso's hybrid partition options](https://www.gnu.org/software/xorriso/man_1_xorrisofs.html). Assembly checks both boot records, the ISO volume label, matching kernels/modules/command lines, embedded payload hashes and the actual EFI contents of both ESP copies before replacing the output.
+
+`SOURCE_DATE_EPOCH` fixes SquashFS timestamps and the ISO modification timestamp. Archive package versions and other build metadata can still vary; byte-for-byte reproducibility is not guaranteed.
+
+## Boot and install
+
+Write `out/ubuntu_uki_iso.iso` as a raw image to the entire USB device using an image writer. Boot its UEFI entry. The live system opens a root console and mounts the live rootfs with a temporary writable overlay. The generated EFIs are unsigned; use firmware with Secure Boot disabled until you provide signed images. BIOS boot is not supported.
+
+From the live console, inspect the disks with `lsblk`, then preview the install:
 
 ```bash
-ubuntu-uki-iso build rootfs live
-ubuntu-uki-iso build rootfs installed
-# Build your live UKI independently as above, or use the rootfs-contained toolchain:
-ubuntu-uki-iso build uki
-# Package the installed UKI and kernel modules for the existing installer:
-ubuntu-uki-iso build uki-target
-ubuntu-uki-iso build squashfs
-ubuntu-uki-iso build iso
+ubuntu-uki-install --root-disk /dev/nvme0n1 --raid none
+# Apply after reviewing the disk and plan; asks for typed confirmation:
+ubuntu-uki-install --root-disk /dev/nvme0n1 --raid none --apply
 ```
 
-`build uki` uses dracut/ukify through kernel-install inside the live rootfs. `build uki-target` builds the server UKI and a deployable deb; a standalone server EFI alone does not replace that installer package. ISO assembly consumes the live EFI at the default output path, both squashfs images, and the server UKI package. It produces `out/ubuntu_uki_iso.iso`, a UEFI hybrid ISO for USB media. Rootfs builds require root or a suitably privileged build container. The existing installer is hardware-specific; review settings before running it on a server.
+**Applying erases and repartitions the selected root disk.** It creates a 1 GiB FAT32 ESP and a labeled ext4 root partition, extracts the installed SquashFS, writes fstab using filesystem UUIDs, copies `uki.efi` to `/boot/efi/EFI/BOOT/BOOTX64.EFI`, and creates a firmware entry. No package installation, initramfs rebuild or compilation happens on the target. Reboot and remove the USB to boot the installed system.
 
-For the complete existing pipeline, use `ubuntu-uki-iso build all`. Individual stages use `python -m ubuntu_uki_iso.kernel.build`, `python -m ubuntu_uki_iso.uki.live` and `python -m ubuntu_uki_iso.uki.target`.
+The installer locates `/payload` on the mounted ISO automatically. An explicit `--payload /path/rootfs.squashfs` requires `uki.efi` and `manifest.json` beside that file. Checksums, release, modules and boot parameters are validated before partitioning. Checksums detect corruption or mismatched artifacts; they are not signatures.
+
+Existing RAID support remains optional: `--raid reuse --data-disks "..."` checks the configured array identity before assembling it. `--raid create` requires blank members and explicit apply/confirmation. Edit array settings in `settings.py` for your hardware. With `--raid none`, no data array is managed. Installed accounts and credentials remain those of the package profile; configure them for your deployment before exposing the server.
 
 ## Validation
 
 ```bash
-.venv/bin/python -m pytest
-.venv/bin/ruff check ubuntu_uki_iso/kernel ubuntu_uki_iso/uki
+pytest
+ruff check ubuntu_uki_iso tests
+ruff format --check ubuntu_uki_iso tests
+ubuntu-uki-iso test vm --test live-boot
+ubuntu-uki-iso test vm --test install
 ```
 
-Unit tests do not prove a kernel build or boot. Full validation requires building the artifacts and booting the hybrid image under UEFI (the existing QEMU harness is available). Previous design and verification history is preserved in [docs/original-design.md](docs/original-design.md).
+Tests exercise real SquashFS compression/extraction and, when ISO tools are available, real xorriso assembly, optical/USB boot records, exact payload contents, module/release consistency, corruption rejection and direct EFI deployment. Disk mutations in unit tests use recording commands and temporary directories. QEMU tests use virtual disk files only.
+
+A real kernel build and both UKI builds completed previously under `out/kernel-uki-validation` (release `7.0.14-xiahualab-iso`). The ISO assembly integration test passed with synthetic root filesystems and PE fixtures using locally extracted xorriso/mtools. A complete mmdebstrap rootfs build and boot/install/reboot VM test have not yet run in this environment; structural ISO checks do not establish boot success.

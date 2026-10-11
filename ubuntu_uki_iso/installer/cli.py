@@ -29,7 +29,6 @@ from ..errors import (
     ToolMissing,
 )
 from ..log import Console, get_console
-from ..paths import Layout
 from ..proc import Runner
 from . import efientry, partition, preflight, raid, target, uki
 from .context import TARGET_MOUNT, Context
@@ -37,15 +36,7 @@ from .preflight import RaidMode
 
 DESCRIPTION = "Install ubuntu-uki-iso onto this machine's storage."
 
-EPILOG = (
-    "WHAT IT DOES NOT DO\n"
-    "  It does not create swap. The installed system has none: no swapfile,\n"
-    "  no swap partition, no zram.\n"
-    "\n"
-    "  It does not overwrite a pre-existing bootloader entry. The firmware entry\n"
-    "  it creates points at \\EFI\\BOOT\\BOOTX64.EFI, which the UKI package's\n"
-    "  postinst keeps pointed at the current kernel.\n"
-)
+EPILOG = "Installs the rootfs and standalone UKI from /payload. Defaults to dry-run."
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -79,7 +70,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         "--payload",
         metavar="PATH",
         help="Rootfs squashfs to install. Autodetected on the ISO, which also "
-        "carries the kernel packages in a debs/ directory beside it.",
+        "carries uki.efi and manifest.json beside it.",
     )
     parser.add_argument(
         "--esp-size", default="1G", metavar="SIZE", help="EFI System Partition size (default 1G)"
@@ -106,17 +97,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="permit a rotational root disk. Read the error first.",
     )
-    parser.add_argument(
-        "--bless",
-        action="store_true",
-        help="Repoint \\EFI\\BOOT\\BOOTX64.EFI at the running kernel's UKI.",
-    )
 
 
 def build_parser() -> argparse.ArgumentParser:
     """A standalone parser, for running the installer directly."""
     parser = argparse.ArgumentParser(
-        prog="ubuntu-uki-iso install",
+        prog="ubuntu-uki-install",
         description=DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=EPILOG,
@@ -159,8 +145,8 @@ def _print_plan(ctx: Context, preflight_result: preflight.Preflight) -> None:
     console.info("      format the root filesystem ext4")
     console.info(f"      write the payload onto it: {ctx.payload}")
     kernel = ctx.release or "<release>"
-    console.info(f"      install the UKI package ({kernel}) — the UKI is already built")
-    console.info("boot: it places the UKI on the ESP; then create a firmware entry")
+    console.info(f"      copy the prebuilt UKI ({kernel}) to the ESP")
+    console.info("boot: create a firmware entry and EFI fallback loader")
 
 
 def _cleanup(ctx: Context) -> None:
@@ -193,7 +179,7 @@ def install(args: argparse.Namespace, console: Console) -> int:
 
     dry_run = _resolve_mode(args, console)
 
-    console.info("ubuntu-uki-iso install")
+    console.info("ubuntu-uki-install")
     if dry_run:
         console.info(
             f"{console.bold('DRY RUN')} — nothing will be written. Add --apply to execute."
@@ -203,6 +189,13 @@ def install(args: argparse.Namespace, console: Console) -> int:
         if args.assume_yes:
             console.warn("--assume-yes is set: the typed confirmation is skipped")
 
+    if not dry_run:
+        import os
+
+        if os.geteuid() != 0:
+            raise Refusal("installation with --apply requires root")
+        if not Path("/sys/firmware/efi").is_dir():
+            raise Refusal("installation requires booting the LiveUSB via UEFI")
     runner = Runner(dry_run=dry_run, console=console)
     runner.require(
         "blkid",
@@ -215,17 +208,15 @@ def install(args: argparse.Namespace, console: Console) -> int:
         "mount",
         "umount",
         "unsquashfs",
-        "chroot",
-        "dpkg-deb",
+        "efibootmgr",
+        "udevadm",
     )
 
-    layout = Layout()
     ctx = Context(
         root_disk=args.root_disk,
         data_disks=data_disks,
         runner=runner,
         console=console,
-        layout=layout,
         mode=mode,
         esp_size=args.esp_size,
         md_device=settings.MD_DEVICE,
@@ -236,7 +227,6 @@ def install(args: argparse.Namespace, console: Console) -> int:
     # Read-only, and before the plan, so the plan names a real file and a real
     # kernel rather than a placeholder.
     target.find_payload(ctx)
-    ctx.load_release()
 
     result = preflight.scan(runner, data_disks or [])
     preflight.report(result, runner, args.root_disk, console)
@@ -304,10 +294,6 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     try:
-        if args.bless:
-            runner = Runner(dry_run=_resolve_mode(args, console), console=console)
-            efientry.bless(runner, console)
-            return 0
         return install(args, console)
     except Refusal as exc:
         console.refuse(exc.reason)

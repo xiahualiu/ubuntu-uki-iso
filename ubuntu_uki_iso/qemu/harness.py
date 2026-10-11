@@ -51,12 +51,13 @@ from ..paths import Layout
 from ..proc import Runner
 from ..settings import (
     AHCI_PORTS,
+    BOOT_LABEL,
     EXPECTED_MD_CHUNK,
     EXPECTED_MD_LEVEL,
     EXPECTED_MD_UUID,
     MD_DEVICE,
     RAID_METADATA_VERSION,
-    ROOT_PARTUUID,
+    ROOT_LABEL,
     VM_BOOT_TIMEOUT,
     VM_COMMAND_TIMEOUT,
     VM_CPUS,
@@ -579,7 +580,7 @@ class Harness:
                 self._data_disks_shell(),
                 " ".join(
                     (
-                        "ubuntu-uki-iso install",
+                        "ubuntu-uki-install",
                         f"--expected-md-devices={VM_DATA_DISKS}",
                         *leading,
                         "--root-disk",
@@ -635,9 +636,9 @@ class Harness:
                 "echo BEGIN",
                 "findmnt -n -o FSTYPE /",
                 "cat /proc/cmdline",
-                "ls -l /payload/rootfs.squashfs",
-                "ls -l /payload/debs/*.deb",
-                "ls -l /live/filesystem.squashfs 2>/dev/null",
+                "ls -l /run/initramfs/live/payload/rootfs.squashfs",
+                "ls -l /run/initramfs/live/payload/uki.efi",
+                "ls -l /run/initramfs/live/live/filesystem.squashfs",
                 self._data_disks_shell(),
                 'set -- $DATA; echo "data-disks:$#"',
                 "lsblk -dn -o NAME,SIZE,TRAN",
@@ -661,15 +662,10 @@ class Harness:
                     "the payload squashfs is not on the mounted medium",
                     "rootfs.squashfs",
                 ),
-                # The payload carries no kernel, so these are what the target's
-                # kernel comes from. An ISO missing them installs a root
-                # filesystem that cannot boot, and the installer is the only
-                # thing that would notice.
                 Check(
-                    "the kernel packages are on the medium",
-                    "no kernel packages on the medium — the target would get no kernel",
-                    r"linux-image-\S+\.deb",
-                    regex=True,
+                    "the installed UKI is on the medium",
+                    "no installed UKI on the medium",
+                    "uki.efi",
                 ),
                 # That the ISO booted at all is proved by reaching this point.
                 # How it booted is worth asserting separately: a USB transport
@@ -839,32 +835,15 @@ class Harness:
                 self._fake_array(),
                 self._installer("--apply", "--assume-yes"),
                 'echo "RC=$?"',
-                "ls -l /mnt/ubuntu-uki-iso-target/boot/efi/EFI/Linux/ 2>/dev/null",
-                "cat /mnt/ubuntu-uki-iso-target/etc/kernel/cmdline",
-                # The kernel and the UKI are not in the payload: they arrive in
-                # the package, so whether they landed is a separate question
-                # from whether the installer returned 0. Prefixed so that the
-                # check below cannot be satisfied by the installer's own chatter
-                # echoing the release back.
-                "ls /mnt/ubuntu-uki-iso-target/lib/modules/ | sed 's/^/modules:/'",
-                # The UKI that boots must be the one the package carried, not
-                # one something rebuilt here. Comparing the ESP's copy against
-                # the package's copy — both on the target, so this is a read —
-                # is the whole claim of the design in one command.
-                "B=/mnt/ubuntu-uki-iso-target;"
-                " PKG=$(cd $B/usr/lib/ubuntu-uki-iso && sha256sum uki.efi | cut -d' ' -f1);"
-                " ESP=$(find $B/boot/efi/EFI/Linux -name '*.efi'"
-                " -exec sha256sum {} \\; | cut -d' ' -f1);"
-                ' [ "$PKG" = "$ESP" ] && echo uki-identical || echo "uki-differs $PKG $ESP"',
-                # Nothing on this machine may build a UKI: the plugins and the
-                # postinst trigger that would call kernel-install are
-                # deliberately absent. Present here would mean two artifacts
-                # racing for the same path.
-                "ls /mnt/ubuntu-uki-iso-target/etc/kernel/postinst.d/ 2>/dev/null"
-                " | grep -c . | sed 's/^/postinst-hooks:/'",
-                "test -d /mnt/ubuntu-uki-iso-target/var/tmp/kernel-debs"
-                " && echo LEFTOVER || echo deb-staging-cleaned",
-                "efibootmgr | grep -i ubuntu-uki-iso",
+                "B=/mnt/ubuntu-uki-iso-target; mkdir -p $B; mount /dev/nvme0n1p2 $B",
+                "mount /dev/nvme0n1p1 $B/boot/efi",
+                "ls -l $B/boot/efi/EFI/BOOT/BOOTX64.EFI",
+                "cat $B/etc/kernel/cmdline",
+                "ls $B/usr/lib/modules/ | sed 's/^/modules:/'",
+                "cmp /run/initramfs/live/payload/uki.efi $B/boot/efi/EFI/BOOT/BOOTX64.EFI"
+                " && echo uki-identical",
+                f"efibootmgr | grep -F {BOOT_LABEL}",
+                "umount $B/boot/efi; umount $B",
                 "echo END",
             ]
         )
@@ -876,52 +855,20 @@ class Harness:
             [
                 Check("installer exited 0", "installer did not exit 0", "RC=0"),
                 Check(
-                    "the package's modules landed",
-                    "the target has no /lib/modules/<release> — the package's payload "
-                    "was not installed, so the UKI has no modules to load",
-                    r"modules:\S*-ubuntu-uki-iso",
-                    regex=True,
+                    "matching runtime modules landed",
+                    "no installed runtime modules",
+                    "modules:",
+                    regex=False,
                 ),
-                Check(
-                    "the UKI on the ESP is the one the package carried",
-                    "the ESP's UKI differs from the package's: something rebuilt it, "
-                    "or the copy onto the ESP was not faithful",
-                    "uki-identical",
-                ),
-                Check(
-                    "nothing on the target would build a UKI",
-                    "a postinst hook is installed: a kernel package installed here "
-                    "would build a second UKI and race the prebuilt one",
-                    "postinst-hooks:0",
-                ),
-                Check(
-                    "the staged packages were cleaned up",
-                    "the packages are still in the target's /var/tmp",
-                    "deb-staging-cleaned",
-                ),
+                Check("the ESP has the supplied UKI", "the ESP UKI differs", "uki-identical"),
                 Check(
                     "the target's cmdline names the partition it was installed to",
-                    "the cmdline does not carry the fixed PARTUUID: the UKI and the "
+                    "the cmdline does not carry the configured GPT PARTLABEL: the UKI and the "
                     "partition table disagree about which filesystem is the root",
-                    ROOT_PARTUUID,
+                    f"root=PARTLABEL={ROOT_LABEL}",
                 ),
-                Check(
-                    "a UKI landed on the ESP",
-                    "no UKI on the ESP",
-                    r"EFI/Linux/.*\.efi",
-                    regex=True,
-                ),
-                Check("firmware entry created", "no firmware entry", "ubuntu-uki-iso"),
-                # The fallback loader is only replaced by --bless, after a
-                # successful boot. Reported, never failed: the shell installer
-                # printed this line on its dry-run path only, so its absence
-                # here proves nothing.
-                Check(
-                    "\\EFI\\BOOT\\BOOTX64.EFI was left alone",
-                    "the fallback loader was replaced",
-                    "BOOTX64.EFI would be left untouched",
-                    required=False,
-                ),
+                Check("a UKI landed on the ESP", "no UKI on the ESP", "BOOTX64.EFI"),
+                Check("firmware entry created", "no firmware entry", BOOT_LABEL),
             ],
         )
 

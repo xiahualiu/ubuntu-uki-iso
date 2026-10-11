@@ -56,7 +56,7 @@ def test_run_step_keeps_the_callers_pythonpath(
     seen: dict = {}
 
     with mock.patch("ubuntu_uki_iso.build.subprocess.run", _fake_run(seen)):
-        run_step("ubuntu_uki_iso.build.iso", root=tmp_path)
+        run_step("ubuntu_uki_iso.iso.build", root=tmp_path)
 
     assert seen["env"]["PYTHONPATH"] == f"{tmp_path}{os.pathsep}/elsewhere"
 
@@ -81,13 +81,15 @@ def test_run_step_raises_when_the_step_fails(tmp_path: Path) -> None:
         mock.patch("ubuntu_uki_iso.build.subprocess.run", _fake_run(seen)),
         pytest.raises(CommandFailed),
     ):
-        run_step("ubuntu_uki_iso.build.squashfs", root=tmp_path)
+        run_step("ubuntu_uki_iso.rootfs.build", root=tmp_path)
 
 
 @pytest.mark.parametrize(
     "argv",
     [
         ["fix-perms"],
+        ["build", "uki-target"],
+        ["build", "squashfs"],
         ["build", "iso", "--rebuild-image"],
         ["doctor", "--rebuild-image"],
         ["clean", "--images"],
@@ -106,8 +108,7 @@ def test_clean_still_parses() -> None:
     ("step", "module"),
     [
         ("kernel", "ubuntu_uki_iso.kernel.build"),
-        ("uki", "ubuntu_uki_iso.uki.live"),
-        ("uki-target", "ubuntu_uki_iso.uki.target"),
+        ("uki", "ubuntu_uki_iso.uki.build"),
     ],
 )
 def test_build_routes_to_owning_subpackages(tmp_path: Path, step: str, module: str) -> None:
@@ -118,4 +119,52 @@ def test_build_routes_to_owning_subpackages(tmp_path: Path, step: str, module: s
     args = build_parser().parse_args(["build", step])
     with mock.patch("ubuntu_uki_iso.build.run_step") as launch:
         cmd_build(args, Layout(tmp_path), Console(colour=False))
-    launch.assert_called_once_with(module, root=tmp_path)
+    extra = ("--temp-dir", str(tmp_path / "out"))
+    if step == "uki":
+        extra += ("--mode", "live")
+    launch.assert_called_once_with(module, *extra, root=tmp_path)
+
+
+def test_build_rootfs_uses_standalone_builder(tmp_path):
+    from ubuntu_uki_iso.cli import cmd_build
+    from ubuntu_uki_iso.log import Console
+    from ubuntu_uki_iso.paths import Layout
+
+    args = build_parser().parse_args(["build", "rootfs", "installed"])
+    with mock.patch("ubuntu_uki_iso.build.run_step") as launch:
+        cmd_build(args, Layout(tmp_path), Console(colour=False))
+    launch.assert_called_once_with(
+        "ubuntu_uki_iso.rootfs.build",
+        "--temp-dir",
+        str(tmp_path / "out"),
+        "--mode",
+        "installed",
+        root=tmp_path,
+    )
+
+
+def test_build_all_produces_both_ukis_before_iso(tmp_path):
+    from ubuntu_uki_iso.cli import cmd_build
+    from ubuntu_uki_iso.log import Console
+    from ubuntu_uki_iso.paths import Layout
+
+    args = build_parser().parse_args(["build", "all"])
+    with mock.patch("ubuntu_uki_iso.build.run_step") as launch:
+        cmd_build(args, Layout(tmp_path), Console(colour=False))
+    calls = launch.call_args_list
+    assert [call.args[0] for call in calls] == [
+        "ubuntu_uki_iso.kernel.build",
+        "ubuntu_uki_iso.rootfs.build",
+        "ubuntu_uki_iso.uki.build",
+        "ubuntu_uki_iso.uki.build",
+        "ubuntu_uki_iso.iso.build",
+    ]
+    assert calls[2].args[-1] == "live"
+    assert calls[3].args[-1] == "installed"
+    assert calls[4].args[1:] == ("--temp-dir", str(tmp_path / "out"))
+
+
+@pytest.mark.parametrize("command", [["mark-booted"], ["install", "--bless"]])
+def test_removed_upgrade_commands_are_rejected(command):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(command)

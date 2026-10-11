@@ -1,27 +1,4 @@
-"""Generating the entry points that live on the target system.
-
-The target rootfs is built by mmdebstrap from distribution packages, not by
-pip, so there is no console-script machinery to lean on. Instead the package
-tree is copied to :data:`TARGET_LIB` and small shims are generated that put
-that directory on ``sys.path`` and call into it.
-
-Why shims rather than copying a self-contained script per entry point: the
-logic stays in one importable, testable place, and the thing dpkg actually
-executes is small enough to read in full. The cost is that the target needs the
-package present — which is why the UKI package carries its own copy rather than
-importing whatever the payload left on the machine.
-
-There are two entry points, at two paths, and the difference is deliberate:
-
-``PACKAGE_LIB``
-    the UKI package's ``postinst``. This runs on the install path, so it must
-    be the code from the package being installed.
-
-``TARGET_LIB``
-    the console script, installed by the payload at build time. ``--bless`` and
-    the boot marker run from it, and they are recovery tools: they have to work
-    on a machine whose package state is exactly what is in question.
-"""
+"""Generate the installer entry point copied into the live rootfs."""
 
 from __future__ import annotations
 
@@ -31,15 +8,7 @@ from pathlib import Path
 TARGET_LIB = "/usr/local/lib/ubuntu-uki-iso"
 
 #: The console script.
-TARGET_BIN = "/usr/local/bin/ubuntu-uki-iso"
-
-#: Where the UKI package carries its own copy of this tree, for its postinst.
-#:
-#: Deliberately not :data:`TARGET_LIB`. The postinst must run the code from the
-#: package being installed, not whatever the payload happened to put on the
-#: machine — otherwise an upgrade would place the new UKI using the old logic,
-#: and the bug would only appear after the version that fixes it ships.
-PACKAGE_LIB = "/usr/lib/ubuntu-uki-iso"
+TARGET_BIN = "/usr/local/bin/ubuntu-uki-install"
 
 _SHIM = '''#!/usr/bin/env python3
 """{description}
@@ -60,7 +29,7 @@ if __name__ == "__main__":
 
 
 def render_shim(
-    module: str, description: str, function: str = "main", *, lib: str = TARGET_LIB
+    module: str, description: str, function: str = "main", lib: str = TARGET_LIB
 ) -> str:
     """A standalone executable that calls ``<module>.<function>()``."""
     return _SHIM.format(module=module, description=description, lib=lib, function=function)
@@ -71,17 +40,9 @@ def write_shim(
     module: str,
     description: str,
     function: str = "main",
-    *,
     lib: str = TARGET_LIB,
 ) -> Path:
-    """Write a shim and make it executable.
-
-    Mode 0755 explicitly: dpkg runs one of these directly and the live
-    environment runs the other from PATH, and a shim that is not executable
-    fails as "command not found", which points nowhere useful. For the
-    ``postinst`` it is worse than useless — dpkg treats a maintainer script it
-    cannot execute as a failed install.
-    """
+    """Write an executable entry point calling the copied Python package."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render_shim(module, description, function, lib=lib), encoding="utf-8")
     path.chmod(0o755)

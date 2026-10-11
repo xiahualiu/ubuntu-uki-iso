@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ubuntu-uki-iso"
 version = "0.1.0"
-description = "Reproducible Ubuntu image with a custom kernel, delivered as a UKI the firmware boots directly"
+description = "Build and install Ubuntu UEFI LiveUSB images with custom kernels and UKIs"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -23,8 +23,7 @@ classifiers = [
 # No runtime dependencies, deliberately.
 #
 # This code runs in three places with very different appetites for surprise:
-# the build container, the live ISO, and the installed system's kernel-install
-# path. A third-party dependency in any of them is something that can be
+# the build container, the live ISO, and the installed system. A third-party dependency in any of them is something that can be
 # missing, at the worst moment, on a machine whose boot depends on it. The
 # standard library is the only thing guaranteed to be there.
 dependencies = []
@@ -43,9 +42,13 @@ dev = [
 ]
 
 [project.scripts]
+# Standalone kernel, UKI and rootfs binaries call main() in their owning build modules.
 ubuntu-uki-iso = "ubuntu_uki_iso.cli:main"
 ubuntu-uki-kernel = "ubuntu_uki_iso.kernel.build:main"
-ubuntu-uki-build = "ubuntu_uki_iso.uki.cli:main"
+ubuntu-uki-build = "ubuntu_uki_iso.uki.build:main"
+ubuntu-uki-image = "ubuntu_uki_iso.iso.build:main"
+ubuntu-uki-install = "ubuntu_uki_iso.installer.cli:main"
+ubuntu-uki-rootfs = "ubuntu_uki_iso.rootfs.build:main"
 
 [project.urls]
 Documentation = "https://github.com/ubuntu-uki-iso/ubuntu-uki-iso#readme"
@@ -66,7 +69,7 @@ testpaths = ["tests", "ubuntu_uki_iso/kernel/tests"]
 # `tests` is on the path so the binary-structure builders in tests/helpers.py
 # can be imported by name from the test modules that use them.
 pythonpath = [".", "tests"]
-addopts = "-q --strict-markers"
+addopts = "-q --strict-markers --import-mode=importlib"
 markers = [
   "slow: tests that need the network or a container",
 ]

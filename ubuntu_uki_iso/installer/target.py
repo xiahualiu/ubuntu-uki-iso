@@ -1,16 +1,4 @@
-"""Put the system onto the target disk.
-
-Formats the root filesystem, unsquashes the payload onto it, and fixes up the
-two things that cannot be known until the disk exists: the fstab, and the
-``root=`` UUID on the kernel command line.
-
-That second one is a real trap. The payload was built days earlier on a
-different machine, and a command line still carrying ``@@ROOT_UUID@@`` produces
-a UKI that builds fine, copies fine, and panics at boot with "unable to find
-root device". It is checked three times: here when substituting, in
-:mod:`ubuntu_uki_iso.installer.uki` by reading the value back out of the finished
-UKI, and again in the fstab writer below.
-"""
+"""Locate the installation payload and deploy its root filesystem."""
 
 from __future__ import annotations
 
@@ -33,21 +21,7 @@ MEDIUM_CANDIDATES = (
 
 
 def find_payload(ctx: Context) -> None:
-    """Locate what the installer consumes on the medium.
-
-    That is two things now: the payload squashfs, and the kernel packages that
-    travel beside it. They are found together because they come from the same
-    place — the ISO's ``/payload`` directory — and because an install needs both.
-
-    dracut may have mounted the medium at any of several places depending on
-    version and on whether systemd drove it, so this looks for the volume label
-    first and falls back to searching the usual mount points — rather than
-    guessing one path and being wrong.
-
-    A dry run tolerates not finding either, because the point of a dry run is
-    often to check the plan before going near the machine. An apply run has no
-    such excuse.
-    """
+    """Locate and validate the SquashFS, standalone UKI and checksum manifest."""
     if ctx.payload is not None:
         if not ctx.payload.is_file():
             raise BuildError(f"--payload {ctx.payload} does not exist")
@@ -65,7 +39,15 @@ def find_payload(ctx: Context) -> None:
             located = Path("<medium>") / paths.PAYLOAD_SQUASHFS
         ctx.payload = located
 
-    _find_debs(ctx, ctx.payload)
+    directory = ctx.payload.parent
+    uki = directory / "uki.efi"
+    if not uki.is_file() and ctx.dry_run:
+        ctx.console.warn(f"no installed UKI at {uki}; dry-run only")
+        return
+    from ..media import validate_payload
+
+    ctx.release = validate_payload(directory)
+    ctx.source_uki = uki
 
 
 def _search_medium(ctx: Context) -> Path | None:
@@ -90,35 +72,6 @@ def _search_medium(ctx: Context) -> Path | None:
     return None
 
 
-def _find_debs(ctx: Context, payload: Path) -> None:
-    """The packages that travel beside the payload.
-
-    One, today: the UKI package, carrying the kernel, its modules and the boot
-    artifact. There is neither a kernel nor a UKI in the payload itself — the
-    target gets both by installing this, which is the same operation as a future
-    kernel upgrade on that machine. An install that cannot find it produces a
-    machine that boots nothing, which is worth saying before the disk is
-    formatted rather than after.
-    """
-    directory = payload.parent / paths.PAYLOAD_DEBS.name
-    debs = sorted(directory.glob("*.deb"))
-    if debs:
-        ctx.debs = debs
-        return
-
-    if ctx.dry_run:
-        ctx.console.warn(f"no packages in {directory}; the plan below assumes they exist")
-        return
-
-    raise BuildError(
-        f"no packages in {directory}.\n"
-        "The payload carries neither a kernel nor a UKI: the target gets both by\n"
-        "installing the package off the medium, which is the same operation as a\n"
-        "kernel upgrade there will be. Without it the install produces a machine\n"
-        "that cannot boot."
-    )
-
-
 def run(ctx: Context) -> None:
     console, runner = ctx.console, ctx.runner
     console.step("3/5 rootfs")
@@ -132,17 +85,17 @@ def run(ctx: Context) -> None:
         ctx.part_root,
     )
 
-    runner.run("mkdir", "-p", str(ctx.target))
-    runner.run("mount", ctx.part_root, str(ctx.target))
+    runner.run("mkdir", "-p", str(ctx.target), check=True)
+    runner.run("mount", ctx.part_root, str(ctx.target), check=True)
 
     if ctx.dry_run:
         console.grey(f"would unsquashfs {ctx.payload} into {ctx.target}")
         console.grey(f"would write /etc/fstab with root={ctx.part_root} and esp={ctx.part_esp}")
-        console.grey("would substitute the real root UUID into /etc/kernel/cmdline")
+        console.grey("would verify the installed GPT root label and kernel command line")
         return
 
-    if not (ctx.target / "etc").is_dir():
-        raise BuildError("the target did not mount where expected")
+    if not device.is_mounted(runner, ctx.part_root):
+        raise BuildError("the target root partition did not mount")
 
     # --- payload ----------------------------------------------------------
     if ctx.payload is None:
@@ -163,14 +116,9 @@ def run(ctx: Context) -> None:
     if not ctx.esp_uuid:
         raise BuildError(f"could not read the UUID of {ctx.part_esp}")
 
-    ctx.load_release()
-    if not ctx.release:
-        raise BuildError(
-            "no kernel release could be derived from the package on the medium.\n"
-            "The next step installs it, and the release is what names both the\n"
-            "modules directory and the UKI, so there is nothing to do without it."
-        )
-    console.info(f"kernel: {ctx.release} (from {ctx.uki_package})")
+    if not ctx.release or not (ctx.target / "usr/lib/modules" / ctx.release).is_dir():
+        raise BuildError(f"installed rootfs has no modules for {ctx.release}")
+    console.info(f"kernel: {ctx.release} (from the prebuilt UKI)")
 
     _write_fstab(ctx)
     _write_cmdline(ctx)
@@ -186,8 +134,8 @@ def _write_fstab(ctx: Context) -> None:
     """Write the fstab, with a note about why the array is mounted nofail.
 
     The identities here are filesystem UUIDs — generated by mkfs, unique to
-    this machine — while the command line names a fixed PARTUUID. That is not
-    an inconsistency but the split the design needs: the PARTUUID is fixed
+    this machine — while the command line names a GPT PARTLABEL. That is not
+    an inconsistency but the split the design needs: the PARTLABEL is fixed
     because it must be known before the disk exists, and the UUID is random
     because it need not be. Keeping the mount identity random is also what
     stops two disks provisioned from the same ISO from becoming
@@ -201,10 +149,6 @@ def _write_fstab(ctx: Context) -> None:
         "# nofail that turns a disk failure into a machine that will not boot.",
         "",
         f"UUID={ctx.root_uuid:<40} /         ext4  defaults        0 1",
-        # The mount point is a setting rather than a literal here, because the
-        # kernel package's postinst hook points kernel-install's boot root at
-        # the same path. Two spellings that drift apart produce a UKI the
-        # firmware never looks at.
         f"UUID={ctx.esp_uuid:<40} {settings.ESP_MOUNT:<9} vfat  umask=0077      0 1",
     ]
     if ctx.data_uuid:
@@ -228,23 +172,12 @@ def _write_fstab(ctx: Context) -> None:
 
 
 def _write_cmdline(ctx: Context) -> None:
-    """Check the payload's command line against the one this build produces.
-
-    Nothing is substituted any more. The installed command line names a fixed
-    PARTUUID, so it is complete when the ISO is built and the payload ships it
-    already rendered — which is what makes a prebuilt UKI possible at all.
-
-    What is left to do is confirm the payload is the one this build produced.
-    The file is not what boots (the UKI's embedded copy is), but it is what any
-    later kernel install on the target would read, so a payload whose cmdline
-    disagreed with the UKI would be a machine that boots today and panics after
-    its first upgrade.
-    """
+    """Verify that the installed rootfs uses the prebuilt UKI's command line."""
     path = ctx.target / "etc/kernel/cmdline"
     if not path.is_file():
         raise BuildError("the payload has no /etc/kernel/cmdline")
 
-    expected = boot.cmdline_installed()
+    expected = boot.cmdline("installed")
     actual = path.read_text(encoding="utf-8").strip()
 
     if actual != expected:
@@ -253,8 +186,7 @@ def _write_cmdline(ctx: Context) -> None:
             f"  payload:  {actual}\n"
             f"  expected: {expected}\n"
             "The UKI on the medium was built from the expected one. A payload\n"
-            "carrying anything else would boot today and build a UKI that panics\n"
-            "at the first kernel upgrade."
+            "carrying anything else would disagree with its boot artifact."
         )
 
     if "@@" in actual:

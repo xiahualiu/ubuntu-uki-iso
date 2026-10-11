@@ -246,20 +246,14 @@ jobs:
 
       - name: build the rootfs images
         run: |
-          test -d out/rootfs-live && test -d out/rootfs-installed \
-            && echo "rootfs present" || python3 -m ubuntu_uki_iso.cli build rootfs all
+          test -s out/iso/live/filesystem.squashfs && test -s out/iso/payload/rootfs.squashfs \
+            && echo "rootfs and SquashFS present" || python3 -m ubuntu_uki_iso.cli build rootfs all
 
       - name: build the UKIs
         run: test -s out/uki/BOOTX64.EFI && echo "live UKI present" || python3 -m ubuntu_uki_iso.cli build uki
 
-      # The target's UKI, packaged with the modules. Built here rather than on
-      # the machine that boots it, which is the whole point: the artifact that
-      # runs has been built and read back before any disk is touched.
-      - name: build the target's UKI package
-        run: python3 -m ubuntu_uki_iso.cli build uki-target
-
-      - name: build the squashfs images
-        run: test -s out/iso/payload/rootfs.squashfs && echo "squashfs present" || python3 -m ubuntu_uki_iso.cli build squashfs
+      - name: build the installed UKI
+        run: python3 -m ubuntu_uki_iso.uki.build --temp-dir out --mode installed
 
       - name: build the ISO
         run: python3 -m ubuntu_uki_iso.cli build iso
@@ -285,12 +279,12 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          # The packages matter as much as the ISO. For a machine that is already
-          # installed, a kernel upgrade is a newer pair of .debs and nothing
-          # else — no ISO, no installer, no rebuild.
+          # Publish kernel inputs and both EFI artifacts alongside the LiveUSB ISO.
           files: |
             out/ubuntu_uki_iso.iso
             out/kernel/*.deb
+            out/uki/*.EFI
+            out/uki/*.efi
           generate_release_notes: true
 
   # ---------------------------------------------------------------------------

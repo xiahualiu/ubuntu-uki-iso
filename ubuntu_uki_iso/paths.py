@@ -27,13 +27,6 @@ from pathlib import Path
 LIVE_SQUASHFS = Path("live/filesystem.squashfs")
 PAYLOAD_SQUASHFS = Path("payload/rootfs.squashfs")
 
-#: The packages the installer installs on the target, beside the payload rather
-#: than inside it: the payload is unsquashed verbatim, while these are handed to
-#: the package manager on the target. One package today — the UKI package — and
-#: a future kernel update there is a newer version of the same file, so the
-#: medium and the upgrade path carry the same artifact.
-PAYLOAD_DEBS = Path("payload/debs")
-
 
 def workspace_root(start: Path | None = None) -> Path:
     """The checkout being built.
@@ -64,94 +57,7 @@ class Layout:
     def out(self) -> Path:
         return self.root / "out"
 
-    # -- kernel ------------------------------------------------------------
-
-    @property
-    def kernel(self) -> Path:
-        return self.out / "kernel"
-
-    @property
-    def kernel_release_file(self) -> Path:
-        """The single authority on the built kernel's release string.
-
-        ``linux-source-7.0.0`` carries upstream 7.0.14, so the package name is
-        not the release and nothing may infer one. Written by the kernel build,
-        read by everything downstream.
-        """
-        return self.kernel / "release"
-
-    def _kernel_deb(self, pattern: str, what: str) -> Path:
-        """The newest matching package, ignoring the ``-dbg`` split."""
-        from .errors import BuildError
-
-        candidates = [p for p in sorted(self.kernel.glob(pattern)) if "-dbg_" not in p.name]
-        if not candidates:
-            raise BuildError(
-                f"no kernel {what} .deb in {self.kernel}.\nRun `ubuntu-uki-iso build kernel` first."
-            )
-        return candidates[-1]
-
-    def kernel_image_deb(self) -> Path:
-        """The kernel image package: vmlinuz, and every module built.
-
-        This is the one most callers want. The UKI package is assembled from it
-        — the modules are its payload and its vmlinuz is what dracut and ukify
-        consume — and the live rootfs installs it to build the ISO's own UKI.
-        """
-        return self._kernel_deb("linux-image-*.deb", "image")
-
-    @property
-    def uki_package(self) -> Path:
-        """The package ``build uki-target`` produces and the installer installs.
-
-        One name, computed in one place: the build writes it here and the ISO
-        staging copies it from here, and a disagreement would be an ISO that
-        boots, installs nothing, and says so only after the disk is formatted.
-        """
-        from . import settings
-
-        name = f"{settings.PACKAGE_NAME}_{self.kernel_release()}_{settings.DPKG_ARCH}.deb"
-        return self.kernel / name
-
-    def kernel_debs(self) -> tuple[Path, Path]:
-        """The image and the headers, for the callers that want the pair.
-
-        The headers are a *build-side* artifact now. Nothing on the target
-        compiles anything: the modules travel inside the UKI package, so there
-        is no DKMS, no ``make modules``, and no reason to ship them. They are
-        still built (``bindeb-pkg`` produces both or neither) and still
-        installed into the live rootfs, which is why this exists at all.
-        """
-        return self.kernel_image_deb(), self._kernel_deb("linux-headers-*.deb", "headers")
-
-    # -- rootfs ------------------------------------------------------------
-
-    @property
-    def rootfs_live(self) -> Path:
-        return self.out / "rootfs-live"
-
-    @property
-    def rootfs_installed(self) -> Path:
-        """The system that gets written to the target disk.
-
-        It travels on the ISO as the installer's *payload*; the two words
-        describe one artifact from two directions.
-        """
-        return self.out / "rootfs-installed"
-
     # -- image -------------------------------------------------------------
-
-    @property
-    def uki(self) -> Path:
-        return self.out / "uki"
-
-    @property
-    def uki_file(self) -> Path:
-        return self.uki / "BOOTX64.EFI"
-
-    @property
-    def iso_stage(self) -> Path:
-        return self.out / "iso"
 
     @property
     def iso(self) -> Path:
@@ -166,29 +72,3 @@ class Layout:
     @property
     def vm_logs(self) -> Path:
         return self.out / "vm-logs"
-
-    # -- scratch -----------------------------------------------------------
-
-    @property
-    def work(self) -> Path:
-        return self.out / "work"
-
-    def kernel_release(self) -> str:
-        """Read the built kernel's release, or explain what to run first."""
-        from .errors import BuildError
-
-        path = self.kernel_release_file
-        if not path.is_file() or not path.read_text().strip():
-            raise BuildError(
-                f"the kernel release has not been recorded ({path} is missing).\n"
-                "Run `ubuntu-uki-iso build kernel` first."
-            )
-        return path.read_text().strip()
-
-    def require_dirs(self) -> None:
-        for path in (self.kernel, self.work, self.iso_stage):
-            path.mkdir(parents=True, exist_ok=True)
-
-
-def default_layout() -> Layout:
-    return Layout()

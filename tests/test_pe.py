@@ -75,9 +75,10 @@ def test_the_real_uki_is_parsed_if_one_has_been_built() -> None:
 
     Skipped on a fresh checkout, because building one takes a kernel.
     """
-    from ubuntu_uki_iso.paths import Layout
+    from ubuntu_uki_iso.paths import workspace_root
+    from ubuntu_uki_iso.uki.folders import FolderLayout
 
-    uki_file = Layout().uki_file
+    uki_file = FolderLayout(workspace_root() / "out").uki / "BOOTX64.EFI"
     if not uki_file.is_file():
         pytest.skip("no UKI built yet")
 

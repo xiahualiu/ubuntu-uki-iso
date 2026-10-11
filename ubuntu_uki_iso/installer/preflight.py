@@ -319,7 +319,7 @@ def decide(
             "\n"
             "  * You meant to build a new array. That is opt-in, because it destroys\n"
             "    whatever is on those disks:\n"
-            "        ubuntu-uki-iso install --apply --raid=create ...\n"
+            "        ubuntu-uki-install --apply --raid=create ...\n"
             "\n"
             "  * You did not mean to run this here at all. Nothing was written, so\n"
             "    nothing needs undoing."

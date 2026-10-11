@@ -1,4 +1,4 @@
-"""Python definitions rendered for dracut, kernel-install and UKI command lines."""
+"""Python definitions rendered for dracut and UKI command lines."""
 
 from __future__ import annotations
 
@@ -11,67 +11,91 @@ from .. import settings
 from ..errors import ConfigError
 
 
-def _write(path: Path, content: str) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return path
-
-
 @dataclass(frozen=True)
 class DracutConfig:
-    hostonly: bool = False
+    """
+    Explicit dracut module and kernel driver lists for a non-host-only initramfs.
+
+    Attributes:
+        modules: Dracut modules to select, together with their required dependencies.
+        drivers: Kernel drivers explicitly selected for the image.
+        compression: Initramfs compression method.
+    """
+
     modules: tuple[str, ...] = ()
     drivers: tuple[str, ...] = ()
-    omit_drivers: tuple[str, ...] = ("nouveau",)
-    omit_modules: tuple[str, ...] = ()
     compression: str = "zstd"
 
     def __post_init__(self) -> None:
+        """
+        Validate module, driver and compression names as single identifiers.
+
+        Raises:
+            ConfigError: A name contains characters outside letters, digits, underscores
+                and hyphens, or a module or driver list is empty.
+        """
         tokens = (
             *self.modules,
             *self.drivers,
-            *self.omit_drivers,
-            *self.omit_modules,
             self.compression,
         )
         if any(not re.fullmatch(r"[A-Za-z0-9_-]+", token) for token in tokens):
             raise ConfigError("dracut names must be single identifiers")
+        if not self.modules or not self.drivers:
+            raise ConfigError("dracut module and driver lists must not be empty")
 
     def render(self) -> str:
-        lines = [f'hostonly="{"yes" if self.hostonly else "no"}"']
+        """
+        Render the settings in dracut configuration syntax.
+
+        Returns:
+            Configuration text with a trailing newline.
+        """
+        lines = ['hostonly="no"']
         for key, values in (
-            ("add_dracutmodules", self.modules),
+            ("dracutmodules", self.modules),
             ("drivers", self.drivers),
-            ("omit_drivers", self.omit_drivers),
-            ("omit_dracutmodules", self.omit_modules),
         ):
-            if values:
-                lines.append(f'{key}+=" {" ".join(values)} "')
+            lines.append(f'{key}=" {" ".join(values)} "')
         lines.append(f"compress={shlex.quote(self.compression)}")
         return "\n".join(lines) + "\n"
 
     def write(self, path: Path) -> Path:
-        return _write(path, self.render())
+        """
+        Render and write the dracut configuration.
 
+        Args:
+            path: Destination configuration file.
 
-@dataclass(frozen=True)
-class KernelInstallConfig:
-    layout: str = "uki"
-    initrd_generator: str = "dracut"
-    uki_generator: str = "ukify"
-
-    def render(self) -> str:
-        return (
-            f"layout={self.layout}\ninitrd_generator={self.initrd_generator}\n"
-            f"uki_generator={self.uki_generator}\n"
-        )
+        Returns:
+            Path to the written file.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.render(), encoding="utf-8")
+        return path
 
 
 @dataclass(frozen=True)
 class KernelCommandLine:
+    """
+    Ordered kernel boot arguments rendered as a space-separated command line.
+
+    Attributes:
+        arguments: Individual boot arguments, each represented by one token.
+    """
+
     arguments: tuple[str, ...]
 
     def render(self) -> str:
+        """
+        Validate and join the kernel boot arguments.
+
+        Returns:
+            Space-separated arguments without a trailing newline.
+
+        Raises:
+            ConfigError: An argument is empty or contains whitespace or a null character.
+        """
         if any(
             not arg or any(char.isspace() for char in arg) or "\0" in arg for arg in self.arguments
         ):
@@ -80,6 +104,13 @@ class KernelCommandLine:
 
 
 def live_command_line() -> KernelCommandLine:
+    """
+    Define root discovery and kernel flags for booting the live medium.
+
+    Returns:
+        Arguments locating the live squashfs by volume label, enabling its writable
+        overlay, disabling automatic storage activation and configuring consoles.
+    """
     return KernelCommandLine(
         (
             f"root=live:CDLABEL={settings.VOLID}",
@@ -98,36 +129,89 @@ def live_command_line() -> KernelCommandLine:
 
 
 def installed_command_line() -> KernelCommandLine:
-    return KernelCommandLine((f"root=PARTUUID={settings.ROOT_PARTUUID}", "ro", "quiet"))
+    """
+    Define the root device and kernel flags for the installed system.
+
+    Edit this function to customize installed-system boot parameters.
+
+    Returns:
+        Arguments selecting the configured GPT root partition label, initially mounting root
+        read-only and enabling quiet boot.
+    """
+    return KernelCommandLine((f"root=PARTLABEL={settings.ROOT_LABEL}", "ro", "quiet"))
 
 
-def cmdline_live() -> str:
-    return live_command_line().render()
+def cmdline(mode: str) -> str:
+    """
+    Define the embedded kernel command line for the selected boot mode.
 
+    Args:
+        mode: Boot configuration variant, either live or installed.
 
-def cmdline_installed() -> str:
-    return installed_command_line().render()
+    Returns:
+        Rendered root device and kernel flags from the mode's command-line definition.
+
+    Raises:
+        ConfigError: The mode is not recognized or a boot argument is invalid.
+    """
+    if mode == "live":
+        return live_command_line().render()
+    if mode == "installed":
+        return installed_command_line().render()
+    raise ConfigError(f"unknown UKI mode: {mode!r}")
 
 
 def dracut_conf(variant: str) -> DracutConfig:
+    """
+    Select the initramfs configuration for a build or installed system.
+
+    Args:
+        variant: Configuration variant: live for the live medium, installed for
+            a rebuild on the target, or uki-build for a prebuilt server UKI.
+
+    Returns:
+        Dracut settings with the modules and drivers required by the variant.
+
+    Raises:
+        ConfigError: The variant is not recognized.
+    """
+    modules = (
+        "base",
+        "systemd",
+        "dracut-systemd",
+        "udev-rules",
+        "kernel-modules",
+        "rootfs-block",
+        "fs-lib",
+        "shutdown",
+        "mdraid",
+    )
+    drivers = ("nvme", "ahci", "raid0")
     if variant == "live":
-        # The live root needs squashfs and a writable overlay; GPU stays in the rootfs.
         return DracutConfig(
-            modules=("dmsquash-live", "overlayfs", "mdraid"), omit_modules=("ecryptfs",)
+            modules=(*modules, "dmsquash-live", "overlayfs"),
+            drivers=(*drivers, "usb_storage", "uas", "overlay"),
         )
-    if variant == "installed":
-        # Optional rebuilding on the server can inspect its real hardware.
-        return DracutConfig(hostonly=True, modules=("mdraid",))
-    if variant == "uki-build":
-        # A build host cannot probe the server's storage topology.
-        return DracutConfig(modules=("mdraid",), drivers=("nvme", "ahci", "raid0"))
+    if variant in ("installed", "uki-build"):
+        return DracutConfig(modules=modules, drivers=drivers)
     raise ConfigError(f"unknown dracut variant: {variant!r}")
 
 
-def install_conf() -> KernelInstallConfig:
-    return KernelInstallConfig()
-
-
 def required_packages() -> tuple[str, ...]:
-    """Apt packages required by the standalone dracut/ukify builder."""
-    return ("dracut", "systemd-ukify", "systemd-boot-efi", "kmod", "zstd")
+    """
+    Return the apt packages required for the standalone UKI build.
+
+    Returns:
+        Package names checked by the UKI build preflight.
+    """
+    return (
+        "apt",
+        "dpkg",
+        "dracut",
+        "systemd-ukify",
+        "systemd-boot-efi",
+        "kmod",
+        "mdadm",
+        "dmsetup",
+        "zstd",
+    )

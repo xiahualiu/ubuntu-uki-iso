@@ -9,10 +9,9 @@ anything. This tool runs on CI runners and in containers it does not own, and a
 build step that quietly installs a package is a build step that changes the
 environment every other job shares.
 
-The second is that nothing in the package installs a package onto the machine
-it runs on. The two exceptions are both inside a chroot of the *target* rootfs,
-where the package database belongs to the machine being installed — so this
-test pins them by name, and a new call site anywhere else fails.
+The second is that project code never installs packages on the host or target.
+Rootfs package installation belongs to mmdebstrap; target installation extracts
+SquashFS and copies a prebuilt UKI.
 """
 
 from __future__ import annotations
@@ -29,13 +28,8 @@ from ubuntu_uki_iso.errors import ConfigError, PackagesMissing
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE = REPO / "ubuntu_uki_iso"
 
-#: The only places allowed to install into a package database, and why: both
-#: are inside a chroot of the target rootfs being built or installed, never the
-#: machine running the tool.
-TARGET_ROOTFS_BUILDERS = {
-    "ubuntu_uki_iso/build/hooks/common.py",
-    "ubuntu_uki_iso/installer/uki.py",
-}
+#: No direct package installation call sites are permitted.
+TARGET_ROOTFS_BUILDERS: set[str] = set()
 
 #: An apt install that is not a simulation. ``--simulate`` is what makes
 #: build/hooks/installed.py's check read-only, and it is exempt.
@@ -59,7 +53,7 @@ def test_the_build_group_is_declared() -> None:
     packages = host_packages("build")
     assert "dracut" in packages
     assert "systemd-ukify" in packages
-    assert "dpkg-dev" in packages, "dpkg-deb is how the UKI package is built"
+    assert "dpkg-dev" in packages, "kernel packages need dpkg build tools"
 
 
 def test_the_test_tools_are_not_demanded_of_a_kernel_build() -> None:

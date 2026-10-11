@@ -14,36 +14,16 @@ VOLID = "UBUNTU-UKI-ISO"
 #: length is asserted before use.
 ESP_LABEL = "UBUNTU-UKI"
 
-#: Label for the root filesystem on the target.
+#: GPT partition name and filesystem label for the target's root partition.
+#: The installed UKI selects this partition with root=PARTLABEL=.
 ROOT_LABEL = "ubuntu-uki-iso-root"
 
-#: The GPT partition GUID the installer always writes for the root partition.
-#:
-#: Fixed rather than generated, because it is what the installed command line
-#: names: ``root=PARTUUID=`` is baked into the UKI, and that UKI is built here,
-#: before the partition exists. So the identity of a partition that does not
-#: exist yet has to be a constant both sides read.
-#:
-#: Derived as a UUIDv5 of the project URL rather than invented, so it is
-#: reproducible and obviously not random. It is deliberately the *same* on
-#: every machine this ISO provisions — which is fine while a machine has one
-#: root disk, but would make ``root=PARTUUID=`` ambiguous if a second disk
-#: provisioned from this ISO were ever attached to the same machine. The mount
-#: identity does not have this problem: /etc/fstab keeps the filesystem UUID
-#: mkfs generates, so only the boot path is duplicated.
+#: Fixed GPT partition GUID retained for reproducible installer partitioning.
+#: Boot selection uses ROOT_LABEL rather than this GUID.
 ROOT_PARTUUID = "a0228cdd-e4e1-5447-91d6-305a7b2c0b5a"
 
 #: The hostname and the label of the firmware boot entry.
 BOOT_LABEL = "xiahualab"
-
-#: The kernel-install entry token, written to /etc/kernel/entry-token.
-#:
-#: It decides the UKI's filename. Without it kernel-install falls back to the
-#: machine-id — which the target does not have until it first boots, and which
-#: this build machine has a different value of. A fixed token is what lets the
-#: UKI built here carry the same name every later build on the target will
-#: give its own.
-ENTRY_TOKEN = BOOT_LABEL
 
 #: The path firmware boots with no configuration at all.
 #:
@@ -54,31 +34,10 @@ ENTRY_TOKEN = BOOT_LABEL
 FALLBACK_EFI_PATH = r"\EFI\BOOT\BOOTX64.EFI"
 
 #: Where the ESP is mounted on the installed system.
-#:
-#: Two things have to agree on this and they are written at different times: the
-#: fstab mounts the partition here, and the kernel package's postinst hook
-#: points kernel-install's boot root here. A disagreement puts the UKI
-#: somewhere the firmware never looks.
 ESP_MOUNT = "/boot/efi"
 
-# -- the UKI package --------------------------------------------------------
-
-#: The architecture stamped into the UKI package, and the one every image in
-#: this project is built for. There is exactly one target.
+#: Architecture of the built kernel packages and root filesystems.
 DPKG_ARCH = "amd64"
-
-#: The name of the package that carries the target's kernel, modules and UKI.
-#:
-#: Deliberately not a ``linux-image-*`` name: the kernel's own maintainer
-#: scripts key off that prefix, and this package is not a kernel image — it
-#: carries no vmlinuz the kernel would recognise and no modules its scripts
-#: installed.
-PACKAGE_NAME = "ubuntu-uki-iso-uki"
-
-#: The Maintainer field of the UKI package. Required by dpkg-deb, and the
-#: package is never uploaded to an archive, so this is the project's own
-#: identity rather than a person's address.
-PACKAGE_MAINTAINER = "xiahualiu <xiahualiu@users.noreply.github.com>"
 
 # -- distributions ----------------------------------------------------------
 
@@ -107,9 +66,6 @@ EXPECTED_MD_LEVEL = "raid0"
 EXPECTED_MD_DEVICES = 8
 EXPECTED_MD_CHUNK = "512K"
 RAID_METADATA_VERSION = "1.2"
-
-#: How many UKIs to keep on the ESP. 1 GB holds roughly 10-15 at ~50 MB each.
-UKI_RETENTION = 3
 
 # -- test -------------------------------------------------------------------
 

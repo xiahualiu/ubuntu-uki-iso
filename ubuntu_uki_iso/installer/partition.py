@@ -1,13 +1,4 @@
-"""GPT on the root disk: an EFI System Partition and the root filesystem.
-
-Two partitions, because the design has two. The ESP is sized for roughly ten
-to fifteen UKIs at about 50 MB each, which is why retention is deliberate
-rather than optional.
-
-The data array is not partitioned here or ever. Its members are whole disks
-with md superblocks and no partition table — matching that is part of what
-makes the install reproducible.
-"""
+"""Partition the target root disk into an ESP and a labeled ext4 root."""
 
 from __future__ import annotations
 
@@ -49,11 +40,7 @@ def run(ctx: Context) -> None:
         "sgdisk",
         "--new=2:0:0",
         "--typecode=2:8300",
-        # Fixed, not generated. This GUID is what the command line inside the
-        # prebuilt UKI names, so it is the one thing about this partition that
-        # is decided before the disk is touched — and it has to be written
-        # exactly as settings.ROOT_PARTUUID spells it, lowercase, because that
-        # is the form the kernel matches and /dev/disk/by-partuuid uses.
+        # Keep partition GUIDs reproducible; boot selection uses the GPT name below.
         f"--partition-guid=2:{settings.ROOT_PARTUUID}",
         f"--change-name=2={settings.ROOT_LABEL}",
         ctx.root_disk,
@@ -72,19 +59,19 @@ def run(ctx: Context) -> None:
         for path in (ctx.part_esp, ctx.part_root):
             if not device.exists(path):
                 raise BuildError(f"{path} did not appear after partitioning")
-        _verify_root_guid(ctx)
+        _verify_root_partition(ctx)
         console.ok("partitions created")
 
 
-def _verify_root_guid(ctx: Context) -> None:
-    """Read the table back, rather than trusting sgdisk's exit code.
+def _verify_root_partition(ctx: Context) -> None:
+    """
+    Verify that the GPT root partition label matches the prebuilt UKI command line.
 
-    The root partition's GUID is the one value the prebuilt UKI's command line
-    depends on, and it is also the only one sgdisk was *told* rather than asked
-    for — so it is the one that can silently come out wrong. A mismatch here is
-    a machine that installs perfectly and panics at first boot with "unable to
-    find root device", which is the failure this check exists to move from
-    after the reboot to during the install.
+    Args:
+        ctx: Installation context identifying the partitioned root disk.
+
+    Returns:
+        None. Raises BuildError if the root partition or its expected label is missing.
     """
     table = gpt.parse(Path(ctx.root_disk))
     root = table.by_number(2)
@@ -94,13 +81,11 @@ def _verify_root_guid(ctx: Context) -> None:
             f"Partitions found: {len(table.partitions)}"
         )
 
-    expected = settings.ROOT_PARTUUID.lower()
-    if root.partuuid != expected:
+    expected = settings.ROOT_LABEL
+    if root.name != expected:
         raise BuildError(
-            f"{ctx.root_disk} partition 2 has PARTUUID {root.partuuid},\n"
-            f"but the UKI's command line names {expected}.\n"
-            "The machine would install and then panic at first boot looking for a\n"
-            "partition that does not exist. The disk has been repartitioned but\n"
-            "nothing has been written to the filesystems yet."
+            f"{ctx.root_disk} partition 2 has PARTLABEL {root.name!r},\n"
+            f"but the UKI's command line names {expected!r}.\n"
+            "The disk has been repartitioned but nothing has been written to the filesystems yet."
         )
-    ctx.console.ok(f"root partition PARTUUID: {root.partuuid}")
+    ctx.console.ok(f"root partition PARTLABEL: {root.name}")
