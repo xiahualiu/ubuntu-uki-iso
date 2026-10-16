@@ -1,4 +1,6 @@
-"""Check the installer validates the GPT label used by the installed UKI."""
+"""
+Check the installer validates the GPT label used by the installed UKI.
+"""
 
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -16,10 +18,39 @@ def test_root_partition_label_is_verified(monkeypatch, label):
     table = Mock()
     table.by_number.return_value = root
     monkeypatch.setattr(partition.gpt, "parse", Mock(return_value=table))
-    ctx = Mock(root_disk="/dev/test", console=Mock())
+    ctx = Mock(root_disk="/dev/test")
     if label == settings.ROOT_LABEL:
         partition._verify_root_partition(ctx)
-        ctx.console.ok.assert_called_once()
     else:
         with pytest.raises(BuildError, match="PARTLABEL"):
             partition._verify_root_partition(ctx)
+
+
+def test_real_sgdisk_writes_the_root_label_to_a_disk_image(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
+    from ubuntu_uki_iso.installer.context import Context
+    from ubuntu_uki_iso.installer.preflight import RaidMode
+
+    if not shutil.which("sgdisk"):
+        pytest.skip("sgdisk unavailable")
+    image = tmp_path / "root.img"
+    with image.open("wb") as stream:
+        stream.truncate(128 * 1024**2)
+    execute = subprocess.run
+
+    def command(argv, **kwargs):
+        if argv[0] == "sgdisk":
+            return execute(argv, **kwargs)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(partition.subprocess, "run", command)
+    monkeypatch.setattr(partition.device, "settle_udev", lambda: None)
+    monkeypatch.setattr(partition.device, "exists", lambda path: True)
+    ctx = Context(str(image), [], RaidMode.NONE, dry_run=False, confirmed=True, esp_size="16M")
+    partition.run(ctx)
+    table = partition.gpt.parse(image)
+    esp, root = table.by_number(1), table.by_number(2)
+    assert esp is not None and esp.name == "ESP"
+    assert root is not None and root.name == settings.ROOT_LABEL

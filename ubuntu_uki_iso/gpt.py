@@ -1,4 +1,5 @@
-"""Reading GPT partition tables — from an ISO, and from a disk being installed.
+"""
+Reading GPT partition tables — from an ISO, and from a disk being installed.
 
 The ISO use exists because of a specific, silent failure. The flag combination
 the design notes named for a UEFI-only hybrid ISO — ``-e efi.img -no-emul-boot
@@ -33,7 +34,7 @@ _MAX_ENTRIES = 512  # the spec allows 128 by default; this only bounds a corrupt
 class Partition:
     type_guid: str
     #: The partition's own GUID — what ``root=PARTUUID=`` names, and what the
-    #: installer writes from settings.ROOT_PARTUUID. Distinct from type_guid,
+    #: installer writes from installer.config.ROOT_PARTUUID. Distinct from type_guid,
     #: which is shared by every partition of the same kind.
     unique_guid: str
     first_lba: int
@@ -50,7 +51,8 @@ class Partition:
 
     @property
     def partuuid(self) -> str:
-        """The unique GUID as the kernel and udev spell it: lowercase.
+        """
+        The unique GUID as the kernel and udev spell it: lowercase.
 
         ``_format_guid`` upper-cases, because that is how the type GUIDs are
         written in this module and comparing against them is easier when one
@@ -78,7 +80,8 @@ class PartitionTable:
         return None
 
     def by_number(self, number: int) -> Partition | None:
-        """The nth partition, numbered as sgdisk and blkid number them.
+        """
+        The nth partition, numbered as sgdisk and blkid number them.
 
         Valid because :func:`parse` skips only *empty* entries, and neither a
         disk this project partitions nor an ISO it builds has a gap in the
@@ -91,8 +94,10 @@ class PartitionTable:
 
 
 def _format_guid(raw: bytes) -> str:
-    """Mixed-endian, as the GPT spec specifies. Little-endian in three fields,
-    big-endian in the last two — not a mistake, just an old format."""
+    """
+    Mixed-endian, as the GPT spec specifies. Little-endian in three fields,
+    big-endian in the last two — not a mistake, just an old format.
+    """
     first, second, third = struct.unpack("<IHH", raw[0:8])
     return (
         f"{first:08X}-{second:04X}-{third:04X}-{raw[8:10].hex().upper()}-{raw[10:16].hex().upper()}"
@@ -100,7 +105,8 @@ def _format_guid(raw: bytes) -> str:
 
 
 def parse(path: Path) -> PartitionTable:
-    """Read the MBR signature and, if present, the GPT partition entries.
+    """
+    Read the MBR signature and, if present, the GPT partition entries.
 
     Never raises for a malformed image — an ISO with no partition table is a
     legitimate thing to be handed, and the caller decides what it means.
@@ -137,24 +143,3 @@ def parse(path: Path) -> PartitionTable:
         )
 
     return PartitionTable(has_mbr, tuple(partitions))
-
-
-def parse_el_torito(text: str) -> bool:
-    """Whether xorriso's El Torito report contains a bootable UEFI entry.
-
-    Takes the text of ``xorriso -report_el_torito plain``. The line looks like::
-
-        El Torito boot img :   1  UEFI  y   none  0x0000  0x00      0    35
-
-    so this looks for the platform and the bootable flag, in that order and on
-    the same line, rather than for the substring "efi" — which also matches the
-    image path ``/boot/efi.img`` and would pass on an image with no UEFI entry
-    at all.
-    """
-    for line in text.splitlines():
-        if "UEFI" not in line:
-            continue
-        tail = line.split("UEFI", 1)[1].split()
-        if tail and tail[0].lower() == "y":
-            return True
-    return False

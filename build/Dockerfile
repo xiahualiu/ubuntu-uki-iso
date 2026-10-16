@@ -44,12 +44,18 @@ ENV LC_ALL=C.UTF-8
 # bootloader, which is exactly what a no-bootloader design wants.
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+      apt \
+      dpkg \
+      tar \
+      make \
+      systemd \
       build-essential \
       bc \
       bison \
       flex \
       libssl-dev \
       libelf-dev \
+      libdw-dev \
       libncurses-dev \
       dwarves \
       zstd \
@@ -72,6 +78,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gnupg \
       ubuntu-keyring \
       python3 \
+      python3-pip \
+      python3-setuptools \
+      python3-wheel \
       mmdebstrap \
       xorriso \
       squashfs-tools \
@@ -100,6 +109,7 @@ FROM build AS test
 # boots the ISO the same way the machine does.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       qemu-system-x86 \
+      qemu-utils \
       ovmf \
       expect \
     && rm -rf /var/lib/apt/lists/*

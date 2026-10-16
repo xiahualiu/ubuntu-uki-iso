@@ -128,7 +128,7 @@ jobs:
       # every device helper is stubbed, so it cannot reach a real device even
       # when the logic under test is wrong.
       - name: RAID decision table
-        run: ubuntu-uki-iso test unit
+        run: python3 -m pytest
 
   # ---------------------------------------------------------------------------
   # kernel — expensive, so it runs only when asked or when tagging.
@@ -171,7 +171,7 @@ jobs:
 
       - name: build
         run: |
-          python3 -m ubuntu_uki_iso.cli build kernel
+          python3 -m ubuntu_uki_iso.kernel.build --temp-dir out
 
       - name: record the release
         id: release
@@ -223,7 +223,7 @@ jobs:
 
       # `build iso` needs a kernel; if the cache missed, build one.
       - name: kernel (cache miss)
-        run: test -s out/kernel/release && echo "kernel present" || python3 -m ubuntu_uki_iso.cli build kernel
+        run: test -s out/kernel/release && echo "kernel present" || python3 -m ubuntu_uki_iso.kernel.build --temp-dir out
 
       # Every stage the ISO needs is built here, explicitly. It used to run
       # `build iso` alone, which requires the rootfs images, both UKIs and the
@@ -244,19 +244,23 @@ jobs:
             images-${{ hashFiles('ubuntu_uki_iso/**', 'pyproject.toml') }}-${{
               hashFiles('ubuntu_uki_iso/kernel/config.py') }}
 
+      - name: build the live UKI and boot package
+        run: test -s out/uki/boot-live.deb && echo "live boot package present" || python3 -m ubuntu_uki_iso.uki.build --temp-dir out --mode live
+
+      - name: build the installed UKI and boot package
+        run: test -s out/uki/boot-installed.deb && echo "installed boot package present" || python3 -m ubuntu_uki_iso.uki.build --temp-dir out --mode installed
+
       - name: build the rootfs images
         run: |
-          test -s out/iso/live/filesystem.squashfs && test -s out/iso/payload/rootfs.squashfs \
-            && echo "rootfs and SquashFS present" || python3 -m ubuntu_uki_iso.cli build rootfs all
-
-      - name: build the UKIs
-        run: test -s out/uki/BOOTX64.EFI && echo "live UKI present" || python3 -m ubuntu_uki_iso.cli build uki
-
-      - name: build the installed UKI
-        run: python3 -m ubuntu_uki_iso.uki.build --temp-dir out --mode installed
+          if ! test -s out/iso/payload/base.squashfs; then
+            python3 -m ubuntu_uki_iso.rootfs.build --temp-dir out --mode installed --boot-deb out/uki/boot-installed.deb
+          fi
+          if ! test -s out/iso/live/live-overlay.squashfs; then
+            python3 -m ubuntu_uki_iso.rootfs.build --temp-dir out --mode live --boot-deb out/uki/boot-live.deb
+          fi
 
       - name: build the ISO
-        run: python3 -m ubuntu_uki_iso.cli build iso
+        run: python3 -m ubuntu_uki_iso.iso.build --temp-dir out
 
       - name: verify the boot chain
         run: |
@@ -279,10 +283,11 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          # Publish kernel inputs and both EFI artifacts alongside the LiveUSB ISO.
+          # Publish kernel inputs, boot packages and EFIs alongside the LiveUSB ISO.
           files: |
             out/ubuntu_uki_iso.iso
             out/kernel/*.deb
+            out/uki/boot-*.deb
             out/uki/*.EFI
             out/uki/*.efi
           generate_release_notes: true
@@ -329,7 +334,7 @@ jobs:
           path: out
 
       - name: run
-        run: python3 -m ubuntu_uki_iso.cli test vm
+        run: python3 -m ubuntu_uki_iso.qemu.harness --temp-dir out
 
       - uses: actions/upload-artifact@v4
         if: always()

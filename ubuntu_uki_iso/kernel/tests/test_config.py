@@ -1,4 +1,6 @@
-"""Tests for kernel config overrides and guard entries."""
+"""
+Tests for kernel config overrides and guard entries.
+"""
 
 from __future__ import annotations
 

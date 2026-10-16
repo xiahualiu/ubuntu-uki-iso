@@ -1,43 +1,74 @@
-"""Copy the prebuilt installed UKI onto the target EFI System Partition."""
+"""
+Install the boot Debian package into the target with its EFI partition mounted.
+"""
 
 from __future__ import annotations
 
 import shutil
+import subprocess
+import tempfile
+from pathlib import Path
 
-from .. import media, settings
+from .. import media
 from ..errors import BuildError
+from . import config
 from .context import Context
+from .payload import validate_payload
 
 
 def run(ctx: Context) -> None:
-    """Format and mount the target ESP, copy the UKI, and verify its contents."""
-    console, runner = ctx.console, ctx.runner
-    console.step("4/5 uki")
-    ctx.uki_rel = settings.FALLBACK_EFI_PATH
-    runner.destructive(
-        f"format {ctx.part_esp} as FAT32",
-        "mkfs.vfat",
-        "-F",
-        "32",
-        "-n",
-        settings.ESP_LABEL,
-        ctx.part_esp,
-    )
-    runner.run("mkdir", "-p", str(ctx.esp_mount), check=True)
-    runner.run("mount", ctx.part_esp, str(ctx.esp_mount), check=True)
+    """
+    Mount the ESP and chroot filesystems, install the boot package, and verify the UKI.
+    """
     if ctx.dry_run:
-        console.grey(f"would copy {ctx.source_uki} to {ctx.esp_mount}/EFI/BOOT/BOOTX64.EFI")
+        print("dry run: this step would modify the target; skipping execution")
         return
-    if ctx.source_uki is None:
-        raise BuildError("no validated installed UKI was located")
-    if media.validate_uki(ctx.source_uki, "installed") != ctx.release:
-        raise BuildError("installed UKI release changed during installation")
+    ctx.require_apply()
+    print("==>", "4/5 uki")
+    ctx.uki_rel = config.FALLBACK_EFI_PATH
+    subprocess.run(["mkdir", "-p", str(ctx.esp_mount)], check=True)
+    subprocess.run(["mount", ctx.part_esp, str(ctx.esp_mount)], check=True)
+    if ctx.source_uki is None or ctx.source_boot_deb is None:
+        raise BuildError("no validated installed boot package was located")
+    # Recheck all payload checksums immediately before invoking package scripts.
+    if validate_payload(ctx.source_boot_deb.parent) != ctx.release:
+        raise BuildError("installed boot package release changed during installation")
+    mounted = []
+    try:
+        # Recursive binds expose device nodes and EFI variables inside the chroot.
+        # Slave propagation prevents target cleanup from unmounting live filesystems.
+        for name in ("dev", "proc", "sys"):
+            destination = ctx.target / name
+            destination.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["mount", "--rbind", f"/{name}", destination], check=True)
+            mounted.append(destination)
+            subprocess.run(["mount", "--make-rslave", destination], check=True)
+        staging = ctx.target / "tmp"
+        staging.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="boot-package-", dir=staging) as scratch:
+            package = Path(scratch) / "boot-installed.deb"
+            shutil.copyfile(ctx.source_boot_deb, package)
+            subprocess.run(
+                [
+                    "chroot",
+                    ctx.target,
+                    "/usr/bin/env",
+                    "UBUNTU_UKI_REGISTER_EFI=1",
+                    f"UBUNTU_UKI_EFI_DISK={ctx.root_disk}",
+                    "UBUNTU_UKI_EFI_PART=1",
+                    "dpkg",
+                    "-i",
+                    str(Path("/") / package.relative_to(ctx.target)),
+                ],
+                check=True,
+            )
+    finally:
+        for destination in reversed(mounted):
+            subprocess.run(["umount", "-R", destination], check=False)
     destination = ctx.esp_mount / "EFI/BOOT/BOOTX64.EFI"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(ctx.source_uki, destination)
     if media.digest(destination) != media.digest(ctx.source_uki):
-        raise BuildError("the UKI copy on the target ESP differs from the source")
+        raise BuildError("the packaged UKI on the target ESP differs from the source")
     if not (ctx.target / "usr/lib/modules" / ctx.release).is_dir():
         raise BuildError(f"installed runtime modules are missing for {ctx.release}")
     ctx.uki_path = destination
-    console.ok(f"UKI installed: {destination}")
+    print("ok", f"UKI installed: {destination}")

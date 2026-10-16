@@ -1,4 +1,6 @@
-"""Python definitions rendered for dracut and UKI command lines."""
+"""
+Python definitions rendered for dracut and UKI command lines.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +11,7 @@ from pathlib import Path
 
 from .. import settings
 from ..errors import ConfigError
+from ..settings import Mode
 
 
 @dataclass(frozen=True)
@@ -115,8 +118,8 @@ def live_command_line() -> KernelCommandLine:
         (
             f"root=live:CDLABEL={settings.VOLID}",
             "rd.live.image",
-            "rd.live.dir=/live",
-            "rd.live.squashimg=filesystem.squashfs",
+            "rd.live.dir=/payload",
+            "rd.live.squashimg=base.squashfs",
             "rd.live.overlay.overlayfs=1",
             # Keep data arrays untouched until the installer inspects them.
             "rd.md=0",
@@ -138,10 +141,18 @@ def installed_command_line() -> KernelCommandLine:
         Arguments selecting the configured GPT root partition label, initially mounting root
         read-only and enabling quiet boot.
     """
-    return KernelCommandLine((f"root=PARTLABEL={settings.ROOT_LABEL}", "ro", "quiet"))
+    return KernelCommandLine(
+        (
+            f"root=PARTLABEL={settings.ROOT_LABEL}",
+            "ro",
+            "quiet",
+            "console=tty0",
+            "console=ttyS0,115200n8",
+        )
+    )
 
 
-def cmdline(mode: str) -> str:
+def cmdline(mode: Mode) -> str:
     """
     Define the embedded kernel command line for the selected boot mode.
 
@@ -154,9 +165,9 @@ def cmdline(mode: str) -> str:
     Raises:
         ConfigError: The mode is not recognized or a boot argument is invalid.
     """
-    if mode == "live":
+    if mode == Mode.LIVE:
         return live_command_line().render()
-    if mode == "installed":
+    if mode == Mode.INSTALLED:
         return installed_command_line().render()
     raise ConfigError(f"unknown UKI mode: {mode!r}")
 
@@ -187,12 +198,12 @@ def dracut_conf(variant: str) -> DracutConfig:
         "mdraid",
     )
     drivers = ("nvme", "ahci", "raid0")
-    if variant == "live":
+    if variant == Mode.LIVE:
         return DracutConfig(
             modules=(*modules, "dmsquash-live", "overlayfs"),
             drivers=(*drivers, "usb_storage", "uas", "overlay"),
         )
-    if variant in ("installed", "uki-build"):
+    if variant in (Mode.INSTALLED, "uki-build"):
         return DracutConfig(modules=modules, drivers=drivers)
     raise ConfigError(f"unknown dracut variant: {variant!r}")
 

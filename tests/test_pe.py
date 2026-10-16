@@ -1,4 +1,5 @@
-"""Reading a UKI's sections.
+"""
+Reading a UKI's sections.
 
 The shell version of this project reached for ``objcopy``, which meant binutils
 had to be present wherever the check ran — including on the installed system,
@@ -35,52 +36,55 @@ def test_reads_a_binary_section(uki: Path) -> None:
 
 
 def test_a_missing_section_is_none_not_an_error(uki: Path) -> None:
-    """'This UKI has no command line of its own' is an answer, not a failure."""
+    """
+    'This UKI has no command line of its own' is an answer, not a failure.
+    """
     assert pe.read_section(uki, ".nope") is None
 
 
 def test_has_section_distinguishes_a_uki_from_a_bootloader(tmp_path: Path) -> None:
     loader = tmp_path / "shimx64.efi"
     loader.write_bytes(make_pe({".text": b"\x90" * 64}))
-    assert pe.has_section(loader) is False
+    assert pe.has_section(loader, ".cmdline") is False
 
 
 def test_a_non_pe_file_is_handled(tmp_path: Path) -> None:
     not_pe = tmp_path / "random.bin"
     not_pe.write_bytes(b"this is not a PE file at all, not even close" * 10)
-    assert pe.has_section(not_pe) is False
+    assert pe.has_section(not_pe, ".cmdline") is False
     with pytest.raises(pe.NotPE):
-        pe.read_section(not_pe)
+        pe.read_section(not_pe, ".cmdline")
 
 
 def test_a_truncated_file_is_handled(tmp_path: Path) -> None:
     truncated = tmp_path / "short.bin"
     truncated.write_bytes(b"MZ\x00\x00")
     with pytest.raises(pe.NotPE):
-        pe.read_section(truncated)
+        pe.read_section(truncated, ".cmdline")
 
 
 def test_an_implausible_section_count_is_rejected(tmp_path: Path) -> None:
-    """A corrupt header must not turn into a huge allocation."""
+    """
+    A corrupt header must not turn into a huge allocation.
+    """
     data = bytearray(make_pe({".cmdline": b"x"}))
     struct.pack_into("<H", data, 0x40 + 4 + 2, 5000)  # NumberOfSections
     path = tmp_path / "corrupt.efi"
     path.write_bytes(bytes(data))
     with pytest.raises(pe.NotPE):
-        pe.read_section(path)
+        pe.read_section(path, ".cmdline")
 
 
-def test_the_real_uki_is_parsed_if_one_has_been_built() -> None:
-    """Opportunistic: exercises the parser against a genuine 50 MB UKI.
-
-    Skipped on a fresh checkout, because building one takes a kernel.
+def test_the_real_uki_is_parsed_if_one_has_been_built(request: pytest.FixtureRequest) -> None:
     """
-    from ubuntu_uki_iso.paths import workspace_root
-    from ubuntu_uki_iso.uki.folders import FolderLayout
+    Opportunistic: exercises the parser against a genuine 50 MB UKI.
 
-    uki_file = FolderLayout(workspace_root() / "out").uki / "BOOTX64.EFI"
-    if not uki_file.is_file():
-        pytest.skip("no UKI built yet")
+    Requires an explicit --uki-file argument.
+    """
+    filename = request.config.getoption("--uki-file")
+    if filename is None:
+        pytest.skip("pass --uki-file to inspect a built UKI")
+    uki_file = Path(filename)
 
     embedded = pe.cmdline(uki_file)
     assert embedded, "a UKI with no command line is not a UKI"

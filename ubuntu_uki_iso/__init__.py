@@ -1,4 +1,6 @@
-"""Build custom kernels, UKIs and Ubuntu LiveUSB images, and install their payloads."""
+"""
+Build custom kernels, UKIs and Ubuntu LiveUSB images, and install their payloads.
+"""
 
 __version__ = "0.1.0"
 

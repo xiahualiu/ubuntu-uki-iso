@@ -1,8 +1,9 @@
-"""Looking at disks without touching them.
+"""
+Looking at disks without touching them.
 
 Everything here is read-only. That is not a convention to be maintained by
-discipline — it is why the functions take a :class:`~ubuntu_uki_iso.proc.Runner`
-and call ``probe``, which executes unconditionally even during a dry run.
+discipline: these functions only inspect devices using direct subprocess calls,
+including during the CLI's read-only dry-run planning phase.
 
 ``mdadm --examine --export`` is used in preference to the human-readable
 ``--examine`` output because it emits ``KEY=VALUE`` lines. Parsing the table
@@ -12,10 +13,12 @@ splitting on the first equals sign.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..proc import Runner
+from ..errors import Refusal
 
 #: `mdadm --examine --export` keys we care about.
 _LEVEL_KEY = "MD_LEVEL"
@@ -27,7 +30,9 @@ _CHUNK_KEY = "MD_CHUNK_SIZE"
 
 @dataclass(frozen=True)
 class MdSuperblock:
-    """What ``mdadm --examine`` can tell us about a member disk."""
+    """
+    What ``mdadm --examine`` can tell us about a member disk.
+    """
 
     level: str
     devices: int | None
@@ -40,7 +45,9 @@ class MdSuperblock:
 
 
 def part_name(disk: str, number: int) -> str:
-    """``/dev/nvme0n1`` -> ``/dev/nvme0n1p1``, but ``/dev/sda`` -> ``/dev/sda1``."""
+    """
+    ``/dev/nvme0n1`` -> ``/dev/nvme0n1p1``, but ``/dev/sda`` -> ``/dev/sda1``.
+    """
     if disk.startswith(("/dev/nvme", "/dev/mmcblk", "/dev/loop")):
         return f"{disk}p{number}"
     return f"{disk}{number}"
@@ -50,16 +57,22 @@ def exists(device: str) -> bool:
     return Path(device).is_block_device()
 
 
-def size_bytes(runner: Runner, device: str) -> int:
-    raw = runner.capture("blockdev", "--getsize64", device, check=False)
+def size_bytes(device: str) -> int:
+    raw = subprocess.run(
+        ["blockdev", "--getsize64", device],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    ).stdout.strip()
     try:
         return int(raw)
     except ValueError:
         return 0
 
 
-def human_size(runner: Runner, device: str) -> str:
-    total = size_bytes(runner, device)
+def human_size(device: str) -> str:
+    total = size_bytes(device)
     value = float(total)
     for unit in ("B", "K", "M", "G", "T"):
         if value < 1024:
@@ -69,7 +82,8 @@ def human_size(runner: Runner, device: str) -> str:
 
 
 def is_rotational(device: str) -> bool:
-    """Whether the kernel considers this spinning rust.
+    """
+    Whether the kernel considers this spinning rust.
 
     Used as a guard, not a fact: on this machine a rotational root disk is
     almost certainly one of the eight 8 TB data disks, and repartitioning one
@@ -84,33 +98,78 @@ def is_rotational(device: str) -> bool:
         return False
 
 
-def is_mounted(runner: Runner, device: str) -> bool:
-    return runner.probe("findmnt", "-n", "-S", device, check=False).ok
+def is_mounted(device: str) -> bool:
+    return (
+        subprocess.run(
+            ["findmnt", "-n", "-S", device],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        ).returncode
+        == 0
+    )
 
 
-def filesystems(runner: Runner, device: str) -> tuple[str, ...]:
-    """Filesystem signatures on a device.
+def filesystems(device: str) -> tuple[str, ...]:
+    """
+    Filesystem and partition-table signatures on a device.
 
     Empty means "looks unused", which is the only condition under which this
     installer will create anything.
     """
-    result = runner.probe("blkid", "-p", "-o", "value", "-s", "TYPE", device, check=False)
-    return tuple(sorted({line.strip() for line in result.stdout.splitlines() if line.strip()}))
+    result = subprocess.run(
+        ["blkid", "-p", "-o", "export", device],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode not in (0, 2):
+        raise Refusal(f"could not inspect signatures on {device}: {result.stderr.strip()}")
+    signatures = set()
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key == "TYPE":
+            signatures.add(value)
+        elif separator and key == "PTTYPE":
+            signatures.add(f"partition-table:{value}")
+    return tuple(sorted(signatures))
 
 
-def uuid_of(runner: Runner, device: str) -> str:
-    return runner.capture("blkid", "-s", "UUID", "-o", "value", device, check=False).strip()
+def uuid_of(device: str) -> str:
+    return (
+        subprocess.run(
+            ["blkid", "-s", "UUID", "-o", "value", device],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        .stdout.strip()
+        .strip()
+    )
 
 
-def examine_md(runner: Runner, device: str) -> MdSuperblock | None:
-    """The md superblock on a device, or ``None`` if there is not one.
-
-    ``--export`` needs no privileges to *fail*, which is what happens when the
-    device carries no superblock — so a nonzero exit is the ordinary "no"
-    answer, not an error.
+def examine_md(device: str) -> MdSuperblock | None:
     """
-    result = runner.probe("mdadm", "--examine", "--export", device, check=False)
-    if not result.ok and not result.stdout.strip():
+    The md superblock on a device, or ``None`` if there is not one.
+
+    An explicit "no md superblock" result means the disk is not a member.
+    Other failures stop inspection rather than treating an unreadable disk
+    as blank.
+    """
+    result = subprocess.run(
+        ["mdadm", "--examine", "--export", device],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0 and not result.stdout.strip():
+        errors = result.stderr.strip()
+        if errors and "no md superblock" not in errors.lower():
+            raise Refusal(f"could not examine RAID metadata on {device}: {errors}")
         return None
 
     values: dict[str, str] = {}
@@ -139,8 +198,9 @@ def examine_md(runner: Runner, device: str) -> MdSuperblock | None:
     )
 
 
-def active_array(runner: Runner) -> str | None:
-    """The first running md array, e.g. ``md0``.
+def active_array() -> str | None:
+    """
+    The first running md array, e.g. ``md0``.
 
     Read from ``/proc/mdstat`` rather than ``mdadm --detail --scan`` because it
     needs no privileges and cannot itself cause an assembly.
@@ -156,12 +216,13 @@ def active_array(runner: Runner) -> str | None:
     return None
 
 
-def settle_udev(runner: Runner, timeout: int = 30) -> None:
-    """Wait for udev, after partitioning.
+def settle_udev(timeout: int = 30) -> None:
+    """
+    Wait for udev, after partitioning.
 
     Without this, mkfs races the kernel's partition rescan and intermittently
     fails on a device node that does not exist yet — a failure that reproduces
     about one run in ten.
     """
-    if runner.have("udevadm"):
-        runner.run("udevadm", "settle", f"--timeout={timeout}", check=False)
+    if shutil.which("udevadm"):
+        subprocess.run(["udevadm", "settle", f"--timeout={timeout}"], check=False)

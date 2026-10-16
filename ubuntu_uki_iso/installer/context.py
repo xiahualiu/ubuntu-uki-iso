@@ -1,4 +1,5 @@
-"""State shared across the installer's steps.
+"""
+State shared across the installer's steps.
 
 One object rather than a parameter list, because the steps genuinely share
 this and threading eight arguments through five functions is how they drift
@@ -12,8 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..log import Console
-from ..proc import Runner
+from ..errors import NotConfirmed
 from . import device
 from .preflight import RaidMode
 
@@ -28,13 +28,14 @@ RAID_VERIFY_MOUNT = Path("/mnt/ubuntu-uki-iso-raid-check")
 class Context:
     root_disk: str
     data_disks: list[str]
-    runner: Runner
-    console: Console
     mode: RaidMode
+    dry_run: bool = True
+    confirmed: bool = False
     esp_size: str = "1G"
     md_device: str = "/dev/md0"
     payload: Path | None = None
     source_uki: Path | None = None
+    source_boot_deb: Path | None = None
     force_root_disk: bool = False
 
     # -- filled in by the steps --------------------------------------------
@@ -56,12 +57,16 @@ class Context:
     def esp_mount(self) -> Path:
         return TARGET_MOUNT / "boot/efi"
 
-    @property
-    def dry_run(self) -> bool:
-        return self.runner.dry_run
+    def require_apply(self) -> None:
+        """
+        Refuse writes unless the caller explicitly selected apply and confirmed.
+        """
+        if self.dry_run or not self.confirmed:
+            raise NotConfirmed("installation writes require --apply and confirmation")
 
     def derive_partitions(self) -> None:
-        """Compute the partition device names from the root disk.
+        """
+        Compute the partition device names from the root disk.
 
         Only valid once the disk is known, and only *used* once partitioning
         has happened — but computed up front so the dry run can name them.

@@ -1,1 +1,3 @@
-"""Standalone live and installed rootfs and SquashFS builds."""
+"""
+Standalone live and installed rootfs and SquashFS builds.
+"""

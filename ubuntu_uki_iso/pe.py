@@ -1,4 +1,5 @@
-"""Just enough PE parsing to read a UKI's embedded command line.
+"""
+Just enough PE parsing to read a UKI's embedded command line.
 
 A UKI is a PE binary whose interesting parts are sections: ``.linux`` is the
 kernel, ``.initrd`` the initramfs, ``.cmdline`` the kernel command line.
@@ -17,20 +18,21 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-#: Section name as it appears in the header, NUL-padded to eight bytes.
-CMDLINE_SECTION = ".cmdline"
-
 _PE_SIGNATURE = b"PE\0\0"
 _SECTION_HEADER_SIZE = 40
 _MAX_SECTIONS = 96  # real UKIs have a handful; this only bounds a corrupt header
 
 
 class NotPE(Exception):
-    """The file is not a PE binary, or its headers are not readable."""
+    """
+    The file is not a PE binary, or its headers are not readable.
+    """
 
 
 def _section_table_offset(data: bytes) -> tuple[int, int]:
-    """Return ``(table_offset, section_count)``."""
+    """
+    Return ``(table_offset, section_count)``.
+    """
     if len(data) < 0x40:
         raise NotPE("file is too short to contain a DOS header")
 
@@ -55,8 +57,9 @@ def _section_table_offset(data: bytes) -> tuple[int, int]:
     return table, section_count
 
 
-def read_section(path: Path, name: str = CMDLINE_SECTION) -> bytes | None:
-    """The raw bytes of a PE section, or ``None`` if there is no such section.
+def read_section(path: Path, name: str) -> bytes | None:
+    """
+    The raw bytes of a PE section, or ``None`` if there is no such section.
 
     ``None`` rather than an exception for a missing section: "this UKI has no
     command line of its own" is a real answer, not a parse failure.
@@ -80,8 +83,10 @@ def read_section(path: Path, name: str = CMDLINE_SECTION) -> bytes | None:
     return None
 
 
-def has_section(path: Path, name: str = CMDLINE_SECTION) -> bool:
-    """Whether the file carries a section — used to tell a UKI from a loader."""
+def has_section(path: Path, name: str) -> bool:
+    """
+    Whether the file carries a section — used to tell a UKI from a loader.
+    """
     try:
         return read_section(path, name) is not None
     except (NotPE, OSError):
@@ -89,11 +94,12 @@ def has_section(path: Path, name: str = CMDLINE_SECTION) -> bool:
 
 
 def cmdline(path: Path) -> str | None:
-    """A UKI's embedded kernel command line as text.
+    """
+    A UKI's embedded kernel command line as text.
 
     Strips NUL padding, which ukify uses to round the section up.
     """
-    raw = read_section(path, CMDLINE_SECTION)
+    raw = read_section(path, ".cmdline")
     if raw is None:
         return None
     return raw.decode("utf-8", errors="replace").strip("\0").strip()

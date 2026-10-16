@@ -1,4 +1,5 @@
-"""Proving an ISO is actually hybrid.
+"""
+Proving an ISO is actually hybrid.
 
 These checks exist because of a specific silent failure: the flag combination
 the design named produces a valid El Torito entry and no partition table at
@@ -16,6 +17,7 @@ import pytest
 
 from helpers import BASIC_DATA_TYPE_GUID, ESP_TYPE_GUID, el_torito_report, make_gpt_iso
 from ubuntu_uki_iso import gpt
+from ubuntu_uki_iso.iso.validation import parse_el_torito
 
 
 @pytest.fixture
@@ -43,7 +45,9 @@ def test_a_correct_hybrid_is_recognised(iso: Callable[..., Path]) -> None:
 
 
 def test_the_designs_original_flags_are_caught(iso: Callable[..., Path]) -> None:
-    """No MBR and no GPT — which is what `-isohybrid-gpt-basdat` alone gives."""
+    """
+    No MBR and no GPT — which is what `-isohybrid-gpt-basdat` alone gives.
+    """
     table = gpt.parse(iso(mbr=False, gpt=False))
     assert not table.has_mbr
     assert not table.has_gpt
@@ -57,7 +61,9 @@ def test_an_mbr_without_a_gpt_is_distinguishable(iso: Callable[..., Path]) -> No
 
 
 def test_a_gpt_without_an_esp_type_is_caught(iso: Callable[..., Path]) -> None:
-    """The partition is there but firmware will not recognise it as bootable."""
+    """
+    The partition is there but firmware will not recognise it as bootable.
+    """
     table = gpt.parse(iso(partitions=[(BASIC_DATA_TYPE_GUID, 64, 2048, "Gap0")]))
     assert table.has_gpt
     assert table.esp() is None
@@ -85,7 +91,8 @@ def test_an_empty_gpt_entry_is_skipped(iso: Callable[..., Path]) -> None:
 
 
 def test_the_partitions_own_guid_is_read_lowercase(iso: Callable[..., Path]) -> None:
-    """The installer's check that the disk matches the UKI's command line.
+    """
+    The installer's check that the disk matches the UKI's command line.
 
     The on-disk encoding is mixed-endian and the parser formats it uppercase,
     because that is how the type GUIDs are compared. ``root=PARTUUID=`` and
@@ -103,7 +110,9 @@ def test_the_partitions_own_guid_is_read_lowercase(iso: Callable[..., Path]) -> 
 
 
 def test_partitions_are_addressable_by_number(iso: Callable[..., Path]) -> None:
-    """sgdisk numbers them 1 and 2; the installer has to address the same ones."""
+    """
+    sgdisk numbers them 1 and 2; the installer has to address the same ones.
+    """
     table = gpt.parse(
         iso(
             partitions=[
@@ -141,23 +150,24 @@ def test_a_corrupt_entry_count_does_not_allocate_wildly(iso: Callable[..., Path]
 
 
 def test_a_bootable_uefi_entry_is_detected() -> None:
-    assert gpt.parse_el_torito(el_torito_report("UEFI", "y"))
+    assert parse_el_torito(el_torito_report("UEFI", "y"))
 
 
 def test_a_non_bootable_entry_is_not() -> None:
-    assert not gpt.parse_el_torito(el_torito_report("UEFI", "n"))
+    assert not parse_el_torito(el_torito_report("UEFI", "n"))
 
 
 def test_a_bios_only_image_is_not_mistaken_for_uefi() -> None:
-    assert not gpt.parse_el_torito(el_torito_report("BIOS", "y"))
+    assert not parse_el_torito(el_torito_report("BIOS", "y"))
 
 
 def test_the_image_path_alone_does_not_count() -> None:
-    """`/boot/efi.img` contains 'efi'; the entry must actually be UEFI.
+    """
+    `/boot/efi.img` contains 'efi'; the entry must actually be UEFI.
 
     Matching on the substring would pass an image with no UEFI boot entry at
     all, which is the failure this whole module exists to catch.
     """
     report = el_torito_report("BIOS", "y")
     assert "efi" in report.lower()
-    assert not gpt.parse_el_torito(report)
+    assert not parse_el_torito(report)

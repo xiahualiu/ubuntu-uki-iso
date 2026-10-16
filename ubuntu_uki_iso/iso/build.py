@@ -1,8 +1,11 @@
-"""Assemble a hybrid UEFI ISO from two rootfs images and two UKIs."""
+"""
+Assemble a hybrid UEFI ISO from a shared base, live layer and two UKIs.
+"""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -12,14 +15,29 @@ import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .. import gpt, media, settings
+from .. import gpt, media, pe, settings
+from ..boot_package import EFI_PATH, extract_package, package_path
 from ..errors import BuildError, ConfigError
+from ..settings import Mode
 from . import config
 from .folders import FolderLayout
+from .validation import parse_el_torito
+
+
+def read_kernel_hash(path: Path) -> str:
+    """
+    Return the embedded kernel hash for comparing live and installed UKIs.
+    """
+    raw = pe.read_section(path, ".linux")
+    if not raw:
+        raise BuildError(f"{path} has no kernel")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def preflight(temp_dir: Path) -> None:
-    """Check ISO dependencies and space before creating any build files."""
+    """
+    Check ISO dependencies and space before creating any build files.
+    """
     packages = config.required_packages()
     result = subprocess.run(
         ["apt", "list", "--installed", *packages], check=True, capture_output=True, text=True
@@ -32,7 +50,12 @@ def preflight(temp_dir: Path) -> None:
             f"install with: apt-get install -y {' '.join(missing)}"
         )
     layout = FolderLayout(temp_dir)
-    inputs = (layout.live_rootfs, layout.installed_rootfs, layout.live_uki, layout.installed_uki)
+    inputs = (
+        layout.live_layer,
+        layout.installed_rootfs,
+        package_path(layout.root, Mode.LIVE),
+        package_path(layout.root, Mode.INSTALLED),
+    )
     for path in inputs:
         if not path.is_file():
             raise BuildError(f"missing ISO input: {path}")
@@ -42,7 +65,9 @@ def preflight(temp_dir: Path) -> None:
 
 
 def verify(iso: Path, stage: Path, live_uki: Path) -> None:
-    """Check the volume label, optical/USB boot records and embedded file contents."""
+    """
+    Check the volume label, optical/USB boot records and embedded file contents.
+    """
     result = subprocess.run(
         ["xorriso", "-indev", iso, "-pvd_info", "-report_el_torito", "plain"],
         check=True,
@@ -55,7 +80,7 @@ def verify(iso: Path, stage: Path, live_uki: Path) -> None:
         for line in report.splitlines()
         if line.strip().startswith("Volume id")
     ]
-    if settings.VOLID not in labels or not gpt.parse_el_torito(report):
+    if settings.VOLID not in labels or not parse_el_torito(report):
         raise BuildError("ISO volume label or UEFI El Torito entry is missing")
     table = gpt.parse(iso)
     if not table.has_mbr or not table.has_gpt or table.esp() is None:
@@ -67,9 +92,10 @@ def verify(iso: Path, stage: Path, live_uki: Path) -> None:
         capture_output=True,
     )
     for relative in (
-        "live/filesystem.squashfs",
-        "payload/rootfs.squashfs",
+        "live/live-overlay.squashfs",
+        "payload/base.squashfs",
         "payload/uki.efi",
+        "payload/boot-installed.deb",
         "payload/manifest.json",
         "boot/efi.img",
     ):
@@ -101,32 +127,55 @@ def build(temp_dir: Path) -> Path:
         Path to the verified ISO, replacing any previous output only on success.
     """
     layout = FolderLayout(temp_dir)
-    release = media.validate_uki(layout.live_uki, "live")
-    if media.validate_uki(layout.installed_uki, "installed") != release:
+    with tempfile.TemporaryDirectory(prefix="iso-packages-", dir=layout.root) as scratch:
+        for mode in (Mode.LIVE, Mode.INSTALLED):
+            destination = Path(scratch) / mode
+            extract_package(package_path(layout.root, mode), destination, mode)
+        layout.live_uki = Path(scratch) / Mode.LIVE / EFI_PATH
+        layout.installed_uki = Path(scratch) / Mode.INSTALLED / EFI_PATH
+        return assemble(layout)
+
+
+def assemble(layout: FolderLayout) -> Path:
+    """
+    Assemble an ISO using UKIs extracted from validated boot packages.
+    """
+    release = media.validate_uki(layout.live_uki, Mode.LIVE)
+    if media.validate_uki(layout.installed_uki, Mode.INSTALLED) != release:
         raise BuildError("live and installed UKIs have different kernel releases")
-    if media.read_kernel_hash(layout.live_uki) != media.read_kernel_hash(layout.installed_uki):
+    if read_kernel_hash(layout.live_uki) != read_kernel_hash(layout.installed_uki):
         raise BuildError("live and installed UKIs contain different kernels")
-    media.validate_rootfs(layout.live_rootfs, release, "live")
-    media.validate_rootfs(layout.installed_rootfs, release, "installed")
+    media.validate_rootfs(layout.live_layer, release, Mode.LIVE)
+    base_hash = subprocess.run(
+        ["unsquashfs", "-cat", layout.live_layer, "usr/lib/ubuntu-uki-iso/base-sha256"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if base_hash != media.digest(layout.installed_rootfs):
+        raise BuildError("live installer layer was built against a different shared base")
+    media.validate_rootfs(layout.installed_rootfs, release, Mode.INSTALLED)
     if len(settings.ESP_LABEL) > 11:
         raise BuildError("ESP label exceeds FAT's 11-character limit")
     with tempfile.TemporaryDirectory(prefix="iso-", dir=layout.root) as scratch:
         work = Path(scratch)
         stage = work / "stage"
         for relative, source in (
-            ("live/filesystem.squashfs", layout.live_rootfs),
-            ("payload/rootfs.squashfs", layout.installed_rootfs),
+            ("live/live-overlay.squashfs", layout.live_layer),
+            ("payload/base.squashfs", layout.installed_rootfs),
             ("payload/uki.efi", layout.installed_uki),
+            ("payload/boot-installed.deb", package_path(layout.root, Mode.INSTALLED)),
         ):
             destination = stage / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source, destination)
         payload = stage / "payload"
         manifest = {
-            "version": 1,
+            "version": 2,
             "release": release,
             "sha256": {
-                name: media.digest(payload / name) for name in ("rootfs.squashfs", "uki.efi")
+                name: media.digest(payload / name)
+                for name in ("base.squashfs", "uki.efi", "boot-installed.deb")
             },
         }
         (payload / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -171,7 +220,9 @@ def build(temp_dir: Path) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Parse build arguments and assemble the ISO with direct system commands."""
+    """
+    Parse build arguments and assemble the ISO with direct system commands.
+    """
     parser = argparse.ArgumentParser(description="Build a bootable UEFI LiveUSB ISO")
     parser.add_argument("--temp-dir", type=Path, required=True)
     args = parser.parse_args(argv)

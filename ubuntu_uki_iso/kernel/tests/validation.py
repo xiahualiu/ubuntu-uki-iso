@@ -1,4 +1,6 @@
-"""Kernel configuration validation helpers for tests."""
+"""
+Kernel configuration validation helpers for tests.
+"""
 
 from __future__ import annotations
 
@@ -116,7 +118,8 @@ def guard_entries() -> list[tuple[str, str | None]]:
 
 
 def parse_config_values(text: str) -> dict[str, str | None]:
-    """Kernel ``.config`` text to ``{symbol: value}``.
+    """
+    Kernel ``.config`` text to ``{symbol: value}``.
 
     Unset symbols map to ``None`` so the difference between "disabled" and
     "not mentioned" stays visible.
@@ -172,7 +175,8 @@ def guard_overlap(
 
 
 def _symbol_changes(base: str, merged: str) -> list[tuple[str, str, str]]:
-    """Per-symbol differences between two kernel configs.
+    """
+    Per-symbol differences between two kernel configs.
 
     A symbol-level diff rather than a textual one, for two reasons.
 
@@ -202,7 +206,9 @@ def _show(value: str | None) -> str:
 
 
 def verify_guard(config: Path, base_config: Path) -> None:
-    """The check that protects Docker, run before the compile."""
+    """
+    The check that protects Docker, run before the compile.
+    """
     print("==> verify the never-disable guard")
 
     merged_text = config.read_text(errors="replace")
@@ -238,7 +244,8 @@ def verify_guard(config: Path, base_config: Path) -> None:
 
 
 def report_unknown_config_override_symbols(base_config: Path) -> None:
-    """Mention trim lines that did nothing.
+    """
+    Mention trim lines that did nothing.
 
     Not fatal — a symbol can legitimately disappear between kernel versions —
     but the usual cause is a typo, and a typo'd trim line is a trim that
@@ -265,7 +272,9 @@ def validate_config_override(config_override: list[ConfigEntry]) -> None:
 
 
 def validate_release(release: str, localversion: str) -> None:
-    """Check that a built kernel release includes the configured suffix."""
+    """
+    Check that a built kernel release includes the configured suffix.
+    """
     if not release.endswith(localversion):
         raise BuildError(
             f"the kernel release is {release!r}, which does not end in {localversion!r}"
@@ -273,7 +282,9 @@ def validate_release(release: str, localversion: str) -> None:
 
 
 def workstation_requirements() -> dict[str, tuple[str, ...]]:
-    """Kernel interfaces for Rust, Wine, and Docker; see docs/kernel-workstation.md."""
+    """
+    Kernel interfaces for Rust, Wine, and Docker; see docs/kernel-workstation.md.
+    """
     return {
         "Steam and Proton": (
             "CONFIG_IA32_EMULATION",

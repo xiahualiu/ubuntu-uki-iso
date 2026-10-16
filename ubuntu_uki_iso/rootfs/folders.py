@@ -1,14 +1,16 @@
-"""Rootfs inputs and outputs under the supplied build directory."""
+"""
+Rootfs outputs under the supplied build directory.
+"""
 
 from pathlib import Path
 
 from ..errors import ConfigError
-from ..uki.folders import FolderLayout as KernelLayout
+from ..settings import Mode
 
 
 class FolderLayout:
     """
-    Resolve kernel inputs, rootfs trees and SquashFS images under one directory.
+    Resolve boot package inputs, rootfs trees and SquashFS images under one directory.
     """
 
     def __init__(self, temp_dir: Path) -> None:
@@ -17,28 +19,22 @@ class FolderLayout:
         """
         self.root = temp_dir.resolve()
 
-    def kernel_image_deb(self) -> Path:
-        """
-        Return the unique kernel image deb selected by the recorded kernel release.
-        """
-        return KernelLayout(self.root).kernel_image_deb()
-
-    def rootfs(self, mode: str) -> Path:
+    def rootfs(self, mode: Mode) -> Path:
         """
         Return the directory holding a live or installed rootfs tree.
         """
-        if mode not in ("live", "installed"):
+        if mode not in (Mode.LIVE, Mode.INSTALLED):
             raise ConfigError(f"unknown rootfs mode: {mode!r}")
         return self.root / f"rootfs-{mode}"
 
-    def squashfs(self, mode: str) -> Path:
+    def squashfs(self, mode: Mode) -> Path:
         """
-        Return the image path consumed by ISO staging and the live command line.
+        Return the shared base or live-only layer path consumed by ISO staging.
         """
-        if mode == "live":
-            return self.root / "iso/live/filesystem.squashfs"
-        if mode == "installed":
-            return self.root / "iso/payload/rootfs.squashfs"
+        if mode == Mode.LIVE:
+            return self.root / "iso/live/live-overlay.squashfs"
+        if mode == Mode.INSTALLED:
+            return self.root / "iso/payload/base.squashfs"
         raise ConfigError(f"unknown rootfs mode: {mode!r}")
 
     def require_dirs(self) -> None:

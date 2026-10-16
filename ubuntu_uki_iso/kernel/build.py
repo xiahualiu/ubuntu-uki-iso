@@ -1,4 +1,6 @@
-"""Build Ubuntu kernel packages under the required temporary directory."""
+"""
+Build Ubuntu kernel packages under the required temporary directory.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +12,6 @@ import tarfile
 import time
 from pathlib import Path
 
-from .. import settings
 from ..errors import BuildError
 from . import config as kconfig
 from .folders import FolderLayout
@@ -89,9 +90,9 @@ def fetch_source(download_dir: Path) -> Path:
     Returns:
         Path to the extracted kernel source tree.
     """
-    print(f"==> fetch source ({settings.KERNEL_SOURCE_PKG})")
+    print(f"==> fetch source ({kconfig.KERNEL_SOURCE_PKG})")
     download_dir.mkdir(parents=True, exist_ok=True)
-    deb = download_package(settings.KERNEL_SOURCE_PKG, download_dir)
+    deb = download_package(kconfig.KERNEL_SOURCE_PKG, download_dir)
     print(f"extracting {deb.name} ...")
     extracted = download_dir / "package"
     subprocess.run(["dpkg-deb", "--extract", str(deb), str(extracted)], check=True)
@@ -247,36 +248,6 @@ def build_packages(source_dir: Path, jobs: int, out_dir: Path, release: str) -> 
 # ---------------------------------------------------------------------------
 
 
-def required_packages() -> tuple[str, ...]:
-    """
-    Apt packages required for compiling and packaging the kernel.
-
-    Returns:
-        Names of the required apt packages.
-    """
-    return (
-        "apt",
-        "dpkg",
-        "tar",
-        "make",
-        "build-essential",
-        "bc",
-        "bison",
-        "flex",
-        "libssl-dev",
-        "libelf-dev",
-        "libdw-dev",
-        "libncurses-dev",
-        "dwarves",
-        "debhelper",
-        "fakeroot",
-        "dpkg-dev",
-        "devscripts",
-        "equivs",
-        "zstd",
-    )
-
-
 def preflight(temp_dir: Path) -> None:
     """
     Check kernel prerequisites before downloading or changing files.
@@ -287,7 +258,7 @@ def preflight(temp_dir: Path) -> None:
     Returns:
         None. Raises BuildError if required packages or disk space are missing.
     """
-    packages = required_packages()
+    packages = kconfig.required_packages()
     query = subprocess.run(
         ["apt", "list", "--installed", *packages],
         capture_output=True,

@@ -1,4 +1,6 @@
-"""Test-side model for the kernel guard-entry contract."""
+"""
+Test-side model for the kernel guard-entry contract.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +12,9 @@ from ubuntu_uki_iso.errors import ConfigError
 
 @dataclass(frozen=True)
 class GuardEntry:
-    """A required kernel symbol used to test guard requirement semantics."""
+    """
+    A required kernel symbol used to test guard requirement semantics.
+    """
 
     symbol: str
     requirement: str | None = None

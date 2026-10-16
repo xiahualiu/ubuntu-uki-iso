@@ -1,10 +1,11 @@
-"""The RAID guardrails.
+"""
+The RAID guardrails.
 
 This is the part of the project that can destroy 58 TB, so it is written to be
 read rather than to be clever. The rules, in order of how much they matter:
 
-1. Creating an array requires ``--raid=create``. Nothing infers it. Not an
-   empty disk, not a missing array, not a flag that "looks like" intent.
+1. Auto mode creates an array only when every expected member disk is blank.
+   Existing arrays are preserved. Explicit ``--raid=reuse`` never creates one.
 2. Creating an array is refused if *any* target disk carries a filesystem
    signature or an md superblock. A disk that has ever held data is not a blank
    disk, and this installer does not get to decide it is expendable.
@@ -24,15 +25,13 @@ isn't one.
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from .. import settings
 from ..errors import Refusal
-from ..log import Console
-from ..proc import Runner
-from . import device
+from . import config, device
 from .device import MdSuperblock
 
 
@@ -44,6 +43,7 @@ class Decision(Enum):
 
 
 class RaidMode(Enum):
+    AUTO = "auto"
     REUSE = "reuse"
     CREATE = "create"
     NONE = "none"
@@ -53,12 +53,14 @@ class RaidMode(Enum):
         try:
             return cls(value)
         except ValueError:
-            raise Refusal(f"--raid must be reuse, create or none (got {value!r})") from None
+            raise Refusal(f"--raid must be auto, reuse, create or none (got {value!r})") from None
 
 
 @dataclass
 class DiskScan:
-    """What one data disk looks like, without having touched it."""
+    """
+    What one data disk looks like, without having touched it.
+    """
 
     device: str
     exists: bool
@@ -70,7 +72,9 @@ class DiskScan:
 
     @property
     def is_blank(self) -> bool:
-        """Nothing recognisable on it at all."""
+        """
+        Nothing recognisable on it at all.
+        """
         return self.md is None and not self.filesystems
 
     def state(self) -> str:
@@ -120,8 +124,10 @@ class Preflight:
 # ---------------------------------------------------------------------------
 
 
-def scan(runner: Runner, data_disks: list[str]) -> Preflight:
-    """Inspect every data disk. Read-only, and always runs."""
+def scan(data_disks: list[str]) -> Preflight:
+    """
+    Inspect every data disk. Read-only, and always runs.
+    """
     scans = []
     for path in data_disks:
         if not device.exists(path):
@@ -131,9 +137,9 @@ def scan(runner: Runner, data_disks: list[str]) -> Preflight:
             DiskScan(
                 device=path,
                 exists=True,
-                mounted=device.is_mounted(runner, path),
-                md=device.examine_md(runner, path),
-                filesystems=device.filesystems(runner, path),
+                mounted=device.is_mounted(path),
+                md=device.examine_md(path),
+                filesystems=device.filesystems(path),
             )
         )
 
@@ -142,26 +148,26 @@ def scan(runner: Runner, data_disks: list[str]) -> Preflight:
         if scan_.md and scan_.md.uuid not in seen:
             seen.append(scan_.md.uuid)
 
-    return Preflight(scans=scans, array_uuids=seen, active_array=device.active_array(runner))
+    return Preflight(scans=scans, array_uuids=seen, active_array=device.active_array())
 
 
-def report(preflight: Preflight, runner: Runner, root_disk: str, console: Console) -> None:
-    console.step("preflight: scanning (read-only)")
-    console.info(f"{'DEVICE':<16} {'SIZE':<10} STATE")
-    console.info("-" * 62)
+def report(preflight: Preflight, root_disk: str) -> None:
+    print("==>", "preflight: scanning (read-only)")
+    print(f"{'DEVICE':<16} {'SIZE':<10} STATE")
+    print("-" * 62)
 
     for scan_ in preflight.scans:
-        size = device.human_size(runner, scan_.device) if scan_.exists else "-"
-        console.info(f"{scan_.device:<16} {size:<10} {scan_.state()}")
+        size = device.human_size(scan_.device) if scan_.exists else "-"
+        print(f"{scan_.device:<16} {size:<10} {scan_.state()}")
 
-    console.info("")
+    print("")
     if device.exists(root_disk):
-        console.info(f"root disk: {root_disk} ({device.human_size(runner, root_disk)})")
+        print(f"root disk: {root_disk} ({device.human_size(root_disk)})")
     else:
-        console.info(f"root disk: {root_disk} — DOES NOT EXIST")
+        print(f"root disk: {root_disk} — DOES NOT EXIST")
 
     if preflight.active_array:
-        console.grey(f"already-active array: /dev/{preflight.active_array}")
+        print(f"already-active array: /dev/{preflight.active_array}")
 
 
 # ---------------------------------------------------------------------------
@@ -178,16 +184,17 @@ def decide(
     expected_level: str | None = None,
     expected_devices: int | None = None,
 ) -> Preflight:
-    """Apply the decision table.
+    """
+    Apply the decision table.
 
     Sets ``decision`` and, on refusal, ``refusal`` to a paragraph explaining
     why. Never raises — the caller decides what a refusal means, because the
     dry run wants to print it and the apply run wants to exit 2.
     """
-    expected_uuid = expected_uuid or settings.EXPECTED_MD_UUID
-    expected_level = expected_level or settings.EXPECTED_MD_LEVEL
+    expected_uuid = expected_uuid or config.EXPECTED_MD_UUID
+    expected_level = expected_level or config.EXPECTED_MD_LEVEL
     expected_devices = (
-        expected_devices if expected_devices is not None else settings.EXPECTED_MD_DEVICES
+        expected_devices if expected_devices is not None else config.EXPECTED_MD_DEVICES
     )
 
     def refuse(reason: str) -> Preflight:
@@ -237,6 +244,9 @@ def decide(
                 f"{scan_.device} was given as both the root disk and a data disk.\n"
                 "That is never what anyone means."
             )
+
+    if mode is RaidMode.AUTO and len(preflight.scans) != expected_devices:
+        return refuse(f"expected {expected_devices} data disks, found {len(preflight.scans)}")
 
     present = [scan for scan in preflight.scans if scan.exists]
     members = preflight.members
@@ -302,7 +312,7 @@ def decide(
                 "effect of an installer."
             )
 
-        if mode is RaidMode.CREATE:
+        if mode in (RaidMode.AUTO, RaidMode.CREATE):
             preflight.decision = Decision.CREATE
             return preflight
 
@@ -342,8 +352,10 @@ def decide(
     )
 
 
-def enforce(preflight: Preflight, console: Console) -> None:
-    """Turn a refusal into an exception."""
+def enforce(preflight: Preflight) -> None:
+    """
+    Turn a refusal into an exception.
+    """
     if preflight.decision is Decision.REFUSE:
         raise Refusal(preflight.refusal)
 
@@ -353,8 +365,9 @@ def enforce(preflight: Preflight, console: Console) -> None:
 # ---------------------------------------------------------------------------
 
 
-def check_root_disk(runner: Runner, root_disk: str, *, force: bool = False) -> None:
-    """Sanity-check the disk that is about to be repartitioned.
+def check_root_disk(root_disk: str, *, force: bool = False) -> None:
+    """
+    Sanity-check the disk that is about to be repartitioned.
 
     The single most valuable check here after the array rules: an operator
     typing ``/dev/sda`` instead of ``/dev/nvme0n1`` would otherwise
@@ -363,7 +376,7 @@ def check_root_disk(runner: Runner, root_disk: str, *, force: bool = False) -> N
     if not device.exists(root_disk):
         raise Refusal(f"the root disk {root_disk} does not exist")
 
-    if md := device.examine_md(runner, root_disk):
+    if md := device.examine_md(root_disk):
         raise Refusal(
             f"{root_disk} carries an md superblock ({md.level}, uuid {md.uuid}), so it is\n"
             "(or was) a member of an array. It cannot also be the root disk.\n"
@@ -382,16 +395,22 @@ def check_root_disk(runner: Runner, root_disk: str, *, force: bool = False) -> N
         )
 
     # Anything mounted is in use.
-    candidates = [root_disk, *_children(runner, root_disk)]
+    candidates = [root_disk, *_children(root_disk)]
     for path in candidates:
-        if device.is_mounted(runner, path):
+        if device.is_mounted(path):
             raise Refusal(
                 f"{path} (on {root_disk}) is currently mounted.\n"
                 "Refusing to repartition a disk that is in use."
             )
 
     # A disk holding the running root filesystem is not one to partition.
-    running_source = runner.capture("findmnt", "-n", "-o", "SOURCE", "/", check=False)
+    running_source = subprocess.run(
+        ["findmnt", "-n", "-o", "SOURCE", "/"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    ).stdout.strip()
     if running_source and Path(running_source).name.startswith(Path(root_disk).name):
         raise Refusal(
             f"{root_disk} holds the running root filesystem.\n"
@@ -400,8 +419,12 @@ def check_root_disk(runner: Runner, root_disk: str, *, force: bool = False) -> N
         )
 
 
-def _children(runner: Runner, disk: str) -> list[str]:
-    """Partitions of a disk, as full device paths."""
-    result = runner.probe("lsblk", "-nlo", "NAME", disk, check=False)
+def _children(disk: str) -> list[str]:
+    """
+    Partitions of a disk, as full device paths.
+    """
+    result = subprocess.run(
+        ["lsblk", "-nlo", "NAME", disk], check=False, capture_output=True, text=True, timeout=120
+    )
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return [f"/dev/{name}" for name in lines[1:]]  # the first line is the disk itself

@@ -1,4 +1,6 @@
-"""Build a UKI EFI from a kernel deb, with a standalone command entry point."""
+"""
+Build a UKI and its boot Debian package from a kernel image deb.
+"""
 
 from __future__ import annotations
 
@@ -11,8 +13,11 @@ from pathlib import Path
 
 from .. import pe
 from ..errors import BuildError, ConfigError
+from ..settings import Mode
 from . import config as boot
 from .folders import FolderLayout
+from .layers import write_hook
+from .package import create_package
 
 
 def required_space_gb() -> int:
@@ -72,7 +77,7 @@ def preflight(temp_dir: Path) -> None:
 def build(
     kernel_deb: Path,
     output: Path,
-    mode: str = "installed",
+    mode: Mode = Mode.INSTALLED,
 ) -> Path:
     """
     Build and verify a UKI EFI image from an extracted kernel Debian package.
@@ -84,9 +89,10 @@ def build(
 
     Returns:
         Resolved path to the verified EFI image. The initramfs is retained beside it
-        with the .initramfs.img suffix.
+        with the .initramfs.img suffix. A boot-<mode>.deb containing the UKI and
+        runtime modules is published in the same directory.
     """
-    if mode not in ("live", "installed"):
+    if mode not in (Mode.LIVE, Mode.INSTALLED):
         raise BuildError(f"unknown UKI mode: {mode}")
     kernel_deb, output = kernel_deb.resolve(), output.resolve()
     if not kernel_deb.is_file():
@@ -115,7 +121,7 @@ def build(
         # An empty confdir excludes /etc/dracut.conf.d; vendor drop-ins still apply.
         confdir = stage / "conf.d"
         confdir.mkdir()
-        conf = boot.dracut_conf("live" if mode == "live" else "uki-build").write(
+        conf = boot.dracut_conf(Mode.LIVE if mode == Mode.LIVE else "uki-build").write(
             stage / "dracut.conf"
         )
         print(f"==> dracut ({release})")
@@ -130,6 +136,15 @@ def build(
                 f"--conf={conf}",
                 f"--confdir={confdir}",
                 f"--tmpdir={stage}",
+                *(
+                    [
+                        "--include",
+                        str(write_hook(stage)),
+                        "/var/lib/dracut/hooks/pre-mount/00-live-layer.sh",
+                    ]
+                    if mode == Mode.LIVE
+                    else []
+                ),
                 initrd,
             ],
             check=True,
@@ -155,6 +170,7 @@ def build(
                 raise BuildError(f"UKI is missing {section}")
         if pe.cmdline(candidate) != command_line:
             raise BuildError("UKI embedded command line differs from requested command line")
+        create_package(candidate, modules, release, mode, output.parent / f"boot-{mode}.deb")
         candidate.replace(output)
         # Keep the initramfs as an independently inspectable artifact.
         initrd.replace(output.with_suffix(".initramfs.img"))
@@ -171,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         Exit status: 0 on success or 1 on a handled build failure.
     """
-    parser = argparse.ArgumentParser(description="Build a UKI EFI file from a kernel deb")
+    parser = argparse.ArgumentParser(description="Build a UKI and boot package from a kernel deb")
     parser.add_argument(
         "--temp-dir",
         type=Path,
@@ -179,17 +195,18 @@ def main(argv: list[str] | None = None) -> int:
         help="directory holding kernel/ inputs and uki/ build outputs",
     )
     parser.add_argument("--kernel-deb", type=Path, help="default: image deb in <temp-dir>/kernel")
-    parser.add_argument("--mode", choices=("live", "installed"), default="installed")
+    parser.add_argument("--mode", type=Mode, choices=list(Mode), default=Mode.INSTALLED)
     args = parser.parse_args(argv)
     try:
         layout = FolderLayout(args.temp_dir)
         preflight(args.temp_dir)
         image = args.kernel_deb or layout.kernel_image_deb()
         layout.require_dirs()
-        output = layout.uki / ("BOOTX64.EFI" if args.mode == "live" else "uki.efi")
+        output = layout.uki / ("BOOTX64.EFI" if args.mode == Mode.LIVE else "uki.efi")
         build(image, output, mode=args.mode)
         print("==> UKI: done")
         print(f"UKI: {output}")
+        print(f"Boot package: {layout.uki / f'boot-{args.mode}.deb'}")
         return 0
     except (BuildError, ConfigError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

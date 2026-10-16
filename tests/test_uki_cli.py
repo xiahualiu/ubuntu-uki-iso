@@ -1,10 +1,13 @@
-"""Standalone UKI CLI input selection and EFI output paths."""
+"""
+Standalone UKI CLI input selection and EFI output paths.
+"""
 
 from unittest.mock import Mock
 
 import pytest
 
 from ubuntu_uki_iso.errors import BuildError
+from ubuntu_uki_iso.settings import Mode
 from ubuntu_uki_iso.uki import build as uki_build
 from ubuntu_uki_iso.uki.folders import FolderLayout
 
@@ -35,7 +38,7 @@ def test_preflight_failure_does_not_create_output(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     ("extra", "filename", "mode"),
-    [([], "uki.efi", "installed"), (["--mode", "live"], "BOOTX64.EFI", "live")],
+    [([], "uki.efi", Mode.INSTALLED), (["--mode", Mode.LIVE], "BOOTX64.EFI", Mode.LIVE)],
 )
 def test_cli_builds_efi_from_kernel_output(tmp_path, monkeypatch, extra, filename, mode):
     layout = FolderLayout(tmp_path)
@@ -69,7 +72,7 @@ def test_cli_explicit_input(tmp_path, monkeypatch):
         == 0
     )
     assert build.call_args.args[:2] == (image, output)
-    assert build.call_args.kwargs == {"mode": "installed"}
+    assert build.call_args.kwargs == {"mode": Mode.INSTALLED}
 
 
 def test_preflight_reports_missing_packages(tmp_path, monkeypatch):
@@ -121,7 +124,7 @@ def test_command_line_uses_config_definition(monkeypatch):
         "installed_command_line",
         lambda: config.KernelCommandLine(("root=UUID=test", "ro", "debug")),
     )
-    assert config.cmdline("installed") == "root=UUID=test ro debug"
+    assert config.cmdline(Mode.INSTALLED) == "root=UUID=test ro debug"
 
 
 def test_cli_rejects_output_override(tmp_path):

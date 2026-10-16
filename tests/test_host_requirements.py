@@ -1,17 +1,17 @@
-"""What the tool needs on the machine it runs on, and what it must never do.
+"""
+What the tool needs on the machine it runs on, and what it must never do.
 
 Two separate promises here, and the second is the one that would be easy to
 break silently.
 
-The first is that the requirements are *declared*: one file lists the apt
-packages, and the tool checks it with ``dpkg-query`` rather than installing
-anything. This tool runs on CI runners and in containers it does not own, and a
+The first is that the requirements are *declared*: each submodule lists its apt
+packages, without installing anything on the host. This tool runs on CI runners and in containers it does not own, and a
 build step that quietly installs a package is a build step that changes the
 environment every other job shares.
 
-The second is that project code never installs packages on the host or target.
-Rootfs package installation belongs to mmdebstrap; target installation extracts
-SquashFS and copies a prebuilt UKI.
+The second is that project code never installs packages on the build host.
+mmdebstrap installs the rootfs base; the rootfs builder installs a boot package
+with an explicit target root. Disk installation extracts SquashFS and installs the boot package in a chroot.
 """
 
 from __future__ import annotations
@@ -21,15 +21,17 @@ from pathlib import Path
 
 import pytest
 
-from ubuntu_uki_iso import proc
-from ubuntu_uki_iso.config import host_packages
-from ubuntu_uki_iso.errors import ConfigError, PackagesMissing
+from ubuntu_uki_iso.errors import ConfigError
+from ubuntu_uki_iso.packages import host_packages
 
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE = REPO / "ubuntu_uki_iso"
 
-#: No direct package installation call sites are permitted.
-TARGET_ROOTFS_BUILDERS: set[str] = set()
+#: These modules may install packages only into an explicit target root or chroot.
+TARGET_ROOTFS_BUILDERS: set[str] = {
+    "ubuntu_uki_iso/rootfs/build.py",
+    "ubuntu_uki_iso/installer/uki.py",
+}
 
 #: An apt install that is not a simulation. ``--simulate`` is what makes
 #: build/hooks/installed.py's check read-only, and it is exempt.
@@ -56,8 +58,19 @@ def test_the_build_group_is_declared() -> None:
     assert "dpkg-dev" in packages, "kernel packages need dpkg build tools"
 
 
+def test_build_requirements_follow_submodule_configuration(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ubuntu_uki_iso.uki import config
+
+    original = config.required_packages()
+    monkeypatch.setattr(config, "required_packages", lambda: (*original, "additional-uki-tool"))
+    assert "additional-uki-tool" in host_packages("build")
+    assert "additional-uki-tool" not in host_packages("test")
+
+
 def test_the_test_tools_are_not_demanded_of_a_kernel_build() -> None:
-    """A machine building a kernel should not be told it is missing QEMU."""
+    """
+    A machine building a kernel should not be told it is missing QEMU.
+    """
     assert "qemu-system-x86" not in host_packages("build")
     assert "qemu-system-x86" in host_packages("test")
 
@@ -69,13 +82,16 @@ def test_groups_are_deduplicated_but_keep_their_order() -> None:
 
 
 def test_an_unknown_group_is_refused_rather_than_ignored() -> None:
-    """Silently checking nothing is the failure mode worth refusing."""
+    """
+    Silently checking nothing is the failure mode worth refusing.
+    """
     with pytest.raises(ConfigError, match="unknown host package group"):
         host_packages("nonesuch")
 
 
 def test_the_container_image_can_satisfy_the_declaration() -> None:
-    """The Dockerfile is one way to meet the requirement, not its definition.
+    """
+    The Dockerfile is one way to meet the requirement, not its definition.
 
     Which is only true while it keeps installing everything the file names —
     otherwise the image builds, the tests pass inside it, and a machine that
@@ -90,40 +106,6 @@ def test_the_container_image_can_satisfy_the_declaration() -> None:
 
     missing = [name for name in host_packages("build", "test") if name not in installed]
     assert not missing, f"build/Dockerfile does not install: {', '.join(missing)}"
-
-
-# ---------------------------------------------------------------------------
-# The check, not the install
-# ---------------------------------------------------------------------------
-
-
-def test_a_missing_package_is_named_with_the_command_that_fixes_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(proc, "_package_installed", lambda name: name != "dracut")
-
-    with pytest.raises(PackagesMissing) as caught:
-        proc.Runner.require_packages("python3", "dracut", "xorriso")
-
-    message = str(caught.value)
-    assert "dracut" in message
-    assert "apt-get install -y dracut" in message
-    assert "python3" not in message.split("Install them with")[0]
-
-
-def test_every_missing_package_is_reported_at_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One run, one list. Discovering them one at a time wastes an afternoon."""
-    monkeypatch.setattr(proc, "_package_installed", lambda name: False)
-
-    with pytest.raises(PackagesMissing) as caught:
-        proc.Runner.require_packages("a", "b", "c")
-
-    assert caught.value.packages == ("a", "b", "c")
-
-
-def test_nothing_missing_raises_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(proc, "_package_installed", lambda name: True)
-    proc.Runner.require_packages("dracut")
 
 
 # ---------------------------------------------------------------------------

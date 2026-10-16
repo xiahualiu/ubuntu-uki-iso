@@ -1,1 +1,3 @@
-"""Build a UEFI LiveUSB ISO with a prebuilt system installation payload."""
+"""
+Build a UEFI LiveUSB ISO with a prebuilt system installation payload.
+"""

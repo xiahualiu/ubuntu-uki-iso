@@ -1,4 +1,5 @@
-"""The RAID decision table.
+"""
+The RAID decision table.
 
 This is the part of the project that can destroy 58 TB, so it is tested against
 constructed device state rather than against whatever disks happen to be
@@ -34,7 +35,9 @@ def member(level: str = "raid0", devices: int = 8, uuid: str = MD_UUID) -> MdSup
 def scan_all(
     md: MdSuperblock | None = None, filesystems: tuple[str, ...] = (), mounted: bool = False
 ) -> Preflight:
-    """Every data disk in the same state."""
+    """
+    Every data disk in the same state.
+    """
     scans = [
         DiskScan(
             device=path,
@@ -65,7 +68,8 @@ def test_all_members_present_is_reused() -> None:
 
 
 def test_reuse_wins_over_an_explicit_create() -> None:
-    """--raid=create does not override an array that is actually there.
+    """
+    --raid=create does not override an array that is actually there.
 
     Reusing is the safe reading of an ambiguous ask: the operator who wanted a
     new array also wanted to erase eight disks first, and that is a separate
@@ -80,9 +84,10 @@ def test_reuse_wins_over_an_explicit_create() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mode", [RaidMode.REUSE, RaidMode.CREATE])
+@pytest.mark.parametrize("mode", [RaidMode.AUTO, RaidMode.REUSE, RaidMode.CREATE])
 def test_filesystems_without_a_superblock_are_refused_in_both_modes(mode: RaidMode) -> None:
-    """Disks with data but no md superblock.
+    """
+    Disks with data but no md superblock.
 
     This is the catastrophic case, and there is no flag that makes it fine —
     which is why it is refused under --raid=create too.
@@ -181,7 +186,8 @@ def test_the_root_disk_may_not_also_be_a_data_disk() -> None:
     ],
 )
 def test_a_differently_shaped_array_is_refused(md: MdSuperblock, fragment: str) -> None:
-    """A RAID0 that assembles with the wrong geometry still mounts.
+    """
+    A RAID0 that assembles with the wrong geometry still mounts.
 
     It just returns different bytes at every offset, which is why the shape is
     verified rather than assumed.
@@ -201,3 +207,18 @@ def test_raid_mode_rejects_an_unknown_value() -> None:
 
     with pytest.raises(Refusal):
         RaidMode.parse("destroy-everything")
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_auto_creates_blank_disks_and_preserves_existing_array(existing: bool) -> None:
+    found = scan_all(md=member() if existing else None)
+    decision, _ = verdict(found, RaidMode.AUTO)
+    assert decision is (Decision.REUSE if existing else Decision.CREATE)
+
+
+def test_auto_refuses_an_incomplete_disk_set() -> None:
+    found = scan_all()
+    found.scans.pop()
+    decision, reason = verdict(found, RaidMode.AUTO)
+    assert decision is Decision.REFUSE
+    assert "expected 8 data disks" in reason

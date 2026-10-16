@@ -1,10 +1,11 @@
-"""The installer's command line and orchestration.
+"""
+The installer's command line and orchestration.
 
 DEFAULTS TO DRY-RUN. Running it with no arguments prints exactly what it would
 do and changes nothing. Writing to disk takes three separate decisions::
 
     --apply                    stop pretending
-    --raid=create              only if a new array is actually wanted
+    --raid=auto                reuse an existing array or create one on blank disks
     typing the confirmation    only for the destructive steps
 
 The design assumption is that the most likely way to lose 58 TB is to run this
@@ -15,10 +16,11 @@ the recoverable one.
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-from .. import settings
 from ..errors import (
     BuildError,
     CommandFailed,
@@ -28,52 +30,56 @@ from ..errors import (
     Refusal,
     ToolMissing,
 )
-from ..log import Console, get_console
-from ..proc import Runner
-from . import efientry, partition, preflight, raid, target, uki
+from . import accounts, config, discovery, efientry, partition, preflight, raid, target, uki
 from .context import TARGET_MOUNT, Context
 from .preflight import RaidMode
 
 DESCRIPTION = "Install ubuntu-uki-iso onto this machine's storage."
 
-EPILOG = "Installs the rootfs and standalone UKI from /payload. Defaults to dry-run."
+EPILOG = "Installs the rootfs and boot Debian package from /payload. Defaults to dry-run."
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add the installer's arguments to an existing parser.
-
-    Arguments rather than a whole parser, so the subcommand can be grafted into
-    the main CLI without reaching into argparse's internals — which, it turns
-    out, do not exist for this.
+    """
+    Define the standalone installer's arguments.
     """
     parser.add_argument(
         "--root-disk",
         metavar="DEV",
-        help="Disk to partition for the system (the NVMe), e.g. /dev/nvme0n1",
+        help="Root disk override; default: discover one SSD around 1 TB",
     )
     parser.add_argument(
-        "--data-disks", metavar='"D1 D2 ..."', help="The eight array members, space separated"
+        "--data-disks",
+        metavar='"D1 D2 ..."',
+        help="Array member overrides; default: discover eight HDDs around 8 TB",
     )
     parser.add_argument(
         "--expected-md-devices",
         type=int,
-        default=settings.EXPECTED_MD_DEVICES,
+        default=config.EXPECTED_MD_DEVICES,
         help="Expected RAID member count (default: %(default)s)",
     )
     parser.add_argument(
         "--raid",
         choices=[m.value for m in RaidMode],
-        default=RaidMode.REUSE.value,
-        help="reuse the existing array (default), create a new one, or none",
+        default=RaidMode.AUTO.value,
+        help="auto (default): preserve an existing array or create one on blank disks; reuse, create, or none",
     )
     parser.add_argument(
         "--payload",
         metavar="PATH",
         help="Rootfs squashfs to install. Autodetected on the ISO, which also "
-        "carries uki.efi and manifest.json beside it.",
+        "carries boot-installed.deb, uki.efi and manifest.json beside it.",
     )
     parser.add_argument(
         "--esp-size", default="1G", metavar="SIZE", help="EFI System Partition size (default 1G)"
+    )
+
+    parser.add_argument("--username", help="Installed login name; prompted when omitted")
+    parser.add_argument(
+        "--password-file",
+        type=Path,
+        help="Private password file for automation; otherwise prompt with confirmation",
     )
 
     mode = parser.add_argument_group("mode")
@@ -100,7 +106,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """A standalone parser, for running the installer directly."""
+    """
+    A standalone parser, for running the installer directly.
+    """
     parser = argparse.ArgumentParser(
         prog="ubuntu-uki-install",
         description=DESCRIPTION,
@@ -111,8 +119,10 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_mode(args: argparse.Namespace, console: Console) -> bool:
-    """Return whether to run dry. Exits with a message on a contradictory ask."""
+def _resolve_mode(args: argparse.Namespace) -> bool:
+    """
+    Return whether to run dry. Exits with a message on a contradictory ask.
+    """
     if args.apply and args.dry_run:
         raise Refusal("--apply and --dry-run are mutually exclusive")
     if args.assume_yes and not args.apply:
@@ -121,73 +131,69 @@ def _resolve_mode(args: argparse.Namespace, console: Console) -> bool:
 
 
 def _print_plan(ctx: Context, preflight_result: preflight.Preflight) -> None:
-    console = ctx.console
-    console.step("plan")
+    print("==>", "plan")
 
     match preflight_result.decision:
         case preflight.Decision.REUSE:
-            console.info(f"RAID: assemble the existing {settings.EXPECTED_MD_LEVEL} array")
-            console.info(
-                f"      uuid {settings.EXPECTED_MD_UUID}, "
-                f"{settings.EXPECTED_MD_DEVICES} disks, {settings.EXPECTED_MD_CHUNK} chunks"
+            print(f"RAID: preserve the existing {config.EXPECTED_MD_LEVEL} array")
+            print(
+                f"      uuid {config.EXPECTED_MD_UUID}, "
+                f"{len(ctx.data_disks)} disks, {config.EXPECTED_MD_CHUNK} chunks"
             )
-            console.info("      no superblock is written on this path")
+            print("      no superblock is written on this path")
         case preflight.Decision.CREATE:
-            console.info(
-                f"RAID: CREATE a new {settings.EXPECTED_MD_LEVEL} array across "
+            print(
+                f"RAID: CREATE a new {config.EXPECTED_MD_LEVEL} array across "
                 f"{len(ctx.data_disks)} disks"
             )
-            console.info("      all target disks verified blank")
+            print("      all target disks verified blank")
         case _:
-            console.info("RAID: not managed (--raid=none)")
+            print("RAID: not managed (--raid=none)")
 
-    console.info(f"root: partition {ctx.root_disk} (GPT: ESP {ctx.esp_size} + root)")
-    console.info("      format the root filesystem ext4")
-    console.info(f"      write the payload onto it: {ctx.payload}")
+    if ctx.data_disks:
+        print(f"data disks: {', '.join(ctx.data_disks)}")
+    print(f"root: partition {ctx.root_disk} (GPT: ESP {ctx.esp_size} + root)")
+    print("      format the root filesystem ext4")
+    print(f"      write the payload onto it: {ctx.payload}")
     kernel = ctx.release or "<release>"
-    console.info(f"      copy the prebuilt UKI ({kernel}) to the ESP")
-    console.info("boot: create a firmware entry and EFI fallback loader")
+    print(f"      install the boot package ({kernel}) in the target chroot")
+    print("boot: create a firmware entry and EFI fallback loader")
 
 
 def _cleanup(ctx: Context) -> None:
-    """Unmount everything this run mounted.
+    """
+    Unmount everything this run mounted.
 
     More important than it looks: the target is mounted beneath a running live
     system, so leaving it mounted after a failure means the next run formats a
     filesystem that is still in use.
     """
-    runner = ctx.runner
     if ctx.dry_run:
         return
     for path in (ctx.esp_mount, TARGET_MOUNT):
         if path.exists():
-            runner.run("umount", "-R", str(path), check=False)
+            subprocess.run(["umount", "-R", str(path)], check=False)
 
 
-def install(args: argparse.Namespace, console: Console) -> int:
-    if not args.root_disk:
-        raise Refusal("--root-disk is required")
-
+def install(args: argparse.Namespace) -> int:
     # Annotated rather than inferred: argparse hands back `Any`, and pyright
     # models `Any or ""` as `LiteralString | Any`, whose `.split()` is a
     # `list[LiteralString]` — not assignable to the `list[str]` downstream.
     raw_data_disks: str = args.data_disks or ""
     data_disks = raw_data_disks.split()
     mode = RaidMode.parse(args.raid)
-    if mode is not RaidMode.NONE and not data_disks:
-        raise Refusal("--data-disks is required (or pass --raid=none)")
 
-    dry_run = _resolve_mode(args, console)
+    dry_run = _resolve_mode(args)
 
-    console.info("ubuntu-uki-install")
+    print("ubuntu-uki-install")
     if dry_run:
-        console.info(
-            f"{console.bold('DRY RUN')} — nothing will be written. Add --apply to execute."
-        )
+        print("DRY RUN — nothing will be written. Add --apply to execute.")
     else:
-        console.info(f"{console.red('APPLYING')} — this WILL write to disk.")
+        print("APPLYING — this WILL write to disk.")
         if args.assume_yes:
-            console.warn("--assume-yes is set: the typed confirmation is skipped")
+            print(
+                "WARN:", "--assume-yes is set: the typed confirmation is skipped", file=sys.stderr
+            )
 
     if not dry_run:
         import os
@@ -196,9 +202,9 @@ def install(args: argparse.Namespace, console: Console) -> int:
             raise Refusal("installation with --apply requires root")
         if not Path("/sys/firmware/efi").is_dir():
             raise Refusal("installation requires booting the LiveUSB via UEFI")
-    runner = Runner(dry_run=dry_run, console=console)
-    runner.require(
+    tools = (
         "blkid",
+        "blockdev",
         "findmnt",
         "lsblk",
         "mdadm",
@@ -210,16 +216,28 @@ def install(args: argparse.Namespace, console: Console) -> int:
         "unsquashfs",
         "efibootmgr",
         "udevadm",
+        "chroot",
+        "dpkg-deb",
+    )
+
+    missing = [tool for tool in tools if shutil.which(tool) is None]
+    if missing:
+        raise ToolMissing(*missing)
+
+    root_disk, data_disks = discovery.select(
+        args.root_disk,
+        data_disks,
+        manage_data=mode is not RaidMode.NONE,
+        expected_devices=args.expected_md_devices,
     )
 
     ctx = Context(
-        root_disk=args.root_disk,
+        root_disk=root_disk,
         data_disks=data_disks,
-        runner=runner,
-        console=console,
+        dry_run=dry_run,
         mode=mode,
         esp_size=args.esp_size,
-        md_device=settings.MD_DEVICE,
+        md_device=config.MD_DEVICE,
         force_root_disk=args.force_root_disk,
         payload=Path(args.payload) if args.payload else None,
     )
@@ -228,49 +246,55 @@ def install(args: argparse.Namespace, console: Console) -> int:
     # kernel rather than a placeholder.
     target.find_payload(ctx)
 
-    result = preflight.scan(runner, data_disks or [])
-    preflight.report(result, runner, args.root_disk, console)
+    result = preflight.scan(data_disks or [])
+    preflight.report(result, root_disk)
     preflight.decide(
         result,
-        args.root_disk,
+        root_disk,
         mode,
-        expected_devices=getattr(args, "expected_md_devices", settings.EXPECTED_MD_DEVICES),
+        expected_devices=getattr(args, "expected_md_devices", config.EXPECTED_MD_DEVICES),
     )
-    preflight.enforce(result, console)
-    preflight.check_root_disk(runner, args.root_disk, force=args.force_root_disk)
+    preflight.enforce(result)
+    preflight.check_root_disk(root_disk, force=args.force_root_disk)
 
     _print_plan(ctx, result)
 
     if dry_run:
-        console.info("")
-        console.info(f"{console.green('Nothing was changed.')}")
-        console.info("Re-run with --apply to execute the plan above.")
+        print("")
+        print("Nothing was changed.")
+        print("Re-run with --apply to execute the plan above.")
         return 0
 
     if not args.assume_yes:
-        _confirm(ctx, result, runner)
+        _confirm(ctx, result)
+
+    credentials = accounts.collect(ctx, args.username, args.password_file)
+    ctx.confirmed = True
 
     try:
         partition.run(ctx)
         raid.run(ctx, result)
         target.run(ctx)
+        accounts.create(ctx, credentials)
         uki.run(ctx)
         efientry.run(ctx)
     finally:
+        credentials.password = ""
         _cleanup(ctx)
 
-    console.step("done")
-    console.info(f"root filesystem UUID: {ctx.root_uuid}")
-    console.info(f"kernel: {ctx.release}")
-    console.info("")
-    console.info("The firmware entry for the new UKI has been created, and")
-    console.info("\\EFI\\BOOT\\BOOTX64.EFI boots the same kernel with no configuration.")
-    console.info("The pre-existing bootloader entry was left alone.")
+    print("==>", "done")
+    print(f"root filesystem UUID: {ctx.root_uuid}")
+    print(f"kernel: {ctx.release}")
+    print("")
+    print("The firmware entry for the new UKI has been created, and")
+    print("\\EFI\\BOOT\\BOOTX64.EFI boots the same kernel with no configuration.")
+    print("The pre-existing bootloader entry was left alone.")
     return 0
 
 
-def _confirm(ctx: Context, result: preflight.Preflight, runner: Runner) -> None:
-    """One confirmation, with the consequence spelled out.
+def _confirm(ctx: Context, result: preflight.Preflight) -> None:
+    """
+    One confirmation, with the consequence spelled out.
 
     Once, here, rather than each destructive command asking for itself —
     which trains the operator to type the phrase without reading it.
@@ -285,18 +309,28 @@ def _confirm(ctx: Context, result: preflight.Preflight, runner: Runner) -> None:
             f"  {' '.join(ctx.data_disks)}",
             "Every byte on those disks will be gone.",
         ]
-    runner.confirm(f"destroy {ctx.root_disk}", "\n".join(lines))
+    print("WARN:", "\n".join(lines), file=sys.stderr)
+    phrase = f"destroy {ctx.root_disk}"
+    try:
+        with open("/dev/tty", "r+", encoding="utf-8") as tty:
+            tty.write(f"Type {phrase} to proceed: ")
+            tty.flush()
+            answer = tty.readline().strip()
+    except OSError as exc:
+        raise NotConfirmed("no terminal available; use --assume-yes only for automation") from exc
+    if answer != phrase:
+        raise NotConfirmed("confirmation phrase did not match — nothing was done")
+    ctx.confirmed = True
 
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    console = get_console()
     args = build_parser().parse_args(argv)
 
     try:
-        return install(args, console)
+        return install(args)
     except Refusal as exc:
-        console.refuse(exc.reason)
+        print("REFUSING", exc.reason, file=sys.stderr)
         return Refusal.exit_code
     except (
         BuildError,
@@ -305,11 +339,13 @@ def main(argv: list[str] | None = None) -> int:
         NotConfirmed,
         PackagesMissing,
         ToolMissing,
+        OSError,
+        subprocess.SubprocessError,
     ) as exc:
-        console.error(str(exc))
+        print("ERROR:", str(exc), file=sys.stderr)
         return 1
     except KeyboardInterrupt:
-        console.error("interrupted — nothing further was done")
+        print("ERROR:", "interrupted — nothing further was done", file=sys.stderr)
         return 130
 
 

@@ -1,4 +1,6 @@
-"""Kernel input preparation without downloading or compiling a kernel."""
+"""
+Kernel input preparation without downloading or compiling a kernel.
+"""
 
 import subprocess
 from pathlib import Path

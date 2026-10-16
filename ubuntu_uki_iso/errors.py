@@ -1,4 +1,5 @@
-"""Exceptions.
+"""
+Exceptions.
 
 The exception type is the control flow in this codebase, so the hierarchy is
 worth reading before the rest.
@@ -15,7 +16,8 @@ from __future__ import annotations
 
 
 class ConfigError(Exception):
-    """The configuration is internally inconsistent or refers to something
+    """
+    The configuration is internally inconsistent or refers to something
     that does not exist.
 
     Raised for a trim fragment naming a symbol the base config has never heard
@@ -31,7 +33,9 @@ class BuildError(Exception):
 
 
 class ToolMissing(Exception):
-    """A required command is not on PATH."""
+    """
+    A required command is not on PATH.
+    """
 
     def __init__(self, *tools: str) -> None:
         self.tools = tools
@@ -39,7 +43,8 @@ class ToolMissing(Exception):
 
 
 class PackagesMissing(Exception):
-    """A required package is not installed.
+    """
+    A required package is not installed.
 
     Distinct from :class:`ToolMissing`, which is about one command: a package
     can be declared as a requirement without its binary being on this PATH, and
@@ -57,14 +62,16 @@ class PackagesMissing(Exception):
             + ", ".join(self.packages)
             + "\n\nInstall them with:\n    apt-get install -y "
             + " ".join(self.packages)
-            + "\n\nThe list is declared in the package's config/packages.py:host_package_groups, and the\n"
-            "tool only ever checks it — see the Requirements section of the README."
+            + "\n\nRequirements are declared by each submodule in its config.py.\n"
+            "The tool only checks packages; it does not install them."
         )
 
 
 class CommandFailed(Exception):
-    """An external command exited nonzero and the caller asked for that to be
-    fatal."""
+    """
+    An external command exited nonzero and the caller asked for that to be
+    fatal.
+    """
 
     def __init__(self, argv: list[str], returncode: int, stderr: str = "") -> None:
         self.argv = argv
@@ -75,7 +82,8 @@ class CommandFailed(Exception):
 
 
 class Refusal(Exception):
-    """The installer declined to act.
+    """
+    The installer declined to act.
 
     Exits 2. Distinct from every other failure on purpose: a refusal means the
     machine was examined and left exactly as it was found, which is a
@@ -90,6 +98,8 @@ class Refusal(Exception):
 
 
 class NotConfirmed(Exception):
-    """A destructive step was reached without the typed confirmation."""
+    """
+    A destructive step was reached without the typed confirmation.
+    """
 
     exit_code = 3

@@ -43,10 +43,10 @@ dev = [
 
 [project.scripts]
 # Standalone kernel, UKI and rootfs binaries call main() in their owning build modules.
-ubuntu-uki-iso = "ubuntu_uki_iso.cli:main"
 ubuntu-uki-kernel = "ubuntu_uki_iso.kernel.build:main"
 ubuntu-uki-build = "ubuntu_uki_iso.uki.build:main"
 ubuntu-uki-image = "ubuntu_uki_iso.iso.build:main"
+ubuntu-uki-test = "ubuntu_uki_iso.qemu.harness:main"
 ubuntu-uki-install = "ubuntu_uki_iso.installer.cli:main"
 ubuntu-uki-rootfs = "ubuntu_uki_iso.rootfs.build:main"
 

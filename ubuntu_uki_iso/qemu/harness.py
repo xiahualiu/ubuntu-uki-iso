@@ -1,63 +1,27 @@
-"""Booting the built ISO in QEMU and driving it from the outside.
+"""
+Boot a hybrid ISO as USB storage under OVMF and exercise the real installer.
 
-This is where the project's safety claims are checked against a machine rather
-than asserted in a comment — on an emulated one, driven through the same
-drivers the real machine uses.
-
-Three decisions here are load-bearing.
-
-**No real disk is ever touched.** The guest's disks are plain files under
-``out/vm`` that QEMU presents through its NVMe and AHCI emulation, so the
-installer inside the guest sees ``/dev/nvme0n1`` and ``/dev/sd*`` — the same
-device names as the real machine — while the host creates no block device at
-all. The design notes describe these as loop-backed disks; files are
-deliberately stronger. A loop device on the host is a real block device the
-installer could be pointed at by mistake, and the whole point of the harness is
-that there is nothing here to point it at.
-
-The guest has fewer data disks than the machine does — see
-:data:`~ubuntu_uki_iso.settings.VM_DATA_DISKS`. What is being tested here is the
-integration: that an array assembles on a real kernel, that the reuse path
-leaves the bytes alone, and that the refusal fires. The decision table's
-combinatorial cases are covered far more cheaply, and far more thoroughly, by
-the pytest suite against constructed device state.
-
-**The guest is driven by expect, and every command ends in a sentinel.**
-Reading a prompt back out of a serial console is fragile — prompts change
-colour, wrap, and interleave with kernel messages — whereas a unique marker is
-unambiguous. The whole session is written to ``out/vm-logs/<test>.log``, so a
-run that never reaches the marker can still be read afterwards.
-
-**The evidence is taken inside the guest.** "Nothing was changed" is proved by
-md5summing the disks in the guest before and after the installer runs, not by
-the installer's word for it and not from the host: reading every byte back
-through the emulated device layer costs more than the boot it is checking.
+Only qcow2 files are attached: one 1 TB NVMe SSD and eight 8 TB SATA HDDs.
+Guest scripts fail on unsuccessful checks; serial transcripts remain in vm-logs.
 """
 
 from __future__ import annotations
 
+import argparse
+import base64
 import os
 import re
+import shlex
 import shutil
-import stat
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+import subprocess
+import sys
 from pathlib import Path
 
-from ..config import host_packages
-from ..errors import BuildError, ConfigError
-from ..log import Console, get_console
-from ..paths import Layout
-from ..proc import Runner
-from ..settings import (
+from ..errors import BuildError, ConfigError, ToolMissing
+from ..installer import config as storage
+from ..settings import BOOT_LABEL, ROOT_LABEL
+from .config import (
     AHCI_PORTS,
-    BOOT_LABEL,
-    EXPECTED_MD_CHUNK,
-    EXPECTED_MD_LEVEL,
-    EXPECTED_MD_UUID,
-    MD_DEVICE,
-    RAID_METADATA_VERSION,
-    ROOT_LABEL,
     VM_BOOT_TIMEOUT,
     VM_COMMAND_TIMEOUT,
     VM_CPUS,
@@ -65,860 +29,399 @@ from ..settings import (
     VM_DATA_DISKS,
     VM_MEMORY_MB,
     VM_ROOT_DISK_SIZE,
-    VOLID,
 )
+from .folders import FolderLayout
 
-# -- the machine under test -------------------------------------------------
-
-#: The test image's qemu-system-x86 package installs this; the ISO is x86_64 and
-#: so is the firmware below.
 QEMU = "qemu-system-x86_64"
-
-KVM = "/dev/kvm"
-
-#: Firmware, in the order it is looked for. The Secure Boot build is in the
-#: list only so that it can be recognised and skipped: this UKI is unsigned, so
-#: a secboot firmware would refuse to run it, and a host with nothing else
-#: needs to be told that rather than left to guess from a boot that hangs.
-OVMF_CANDIDATES: tuple[str, ...] = (
-    "/usr/share/OVMF/OVMF_CODE_4M.fd",
-    "/usr/share/OVMF/OVMF_CODE.fd",
-    "/usr/share/ovmf/OVMF.fd",
-    "/usr/share/OVMF/OVMF_CODE_4M.secboot.fd",
+OVMF_PAIRS = (
+    ("/usr/share/OVMF/OVMF_CODE_4M.fd", "/usr/share/OVMF/OVMF_VARS_4M.fd"),
+    ("/usr/share/OVMF/OVMF_CODE.fd", "/usr/share/OVMF/OVMF_VARS.fd"),
 )
-OVMF_VARS_4M = "/usr/share/OVMF/OVMF_VARS_4M.fd"
-
-#: The guest's root disk. NVMe, so it never collides with the sd* namespace the
-#: live medium and the data disks share, and its name is safe to hardcode.
-ROOT_DEVICE = "/dev/nvme0n1"
-
-#: How many data disks the guest gets, and therefore how many disk images the
-#: harness creates. The *names* are not here: the installation medium is an sd*
-#: device too, so the letters move with enumeration order. The guest works out
-#: which are which at runtime — see :meth:`Harness._data_disks_shell`.
-#:
-#: Fewer than the machine's eight because they are on AHCI and QEMU's emulated
-#: controller has six ports; see :data:`~ubuntu_uki_iso.settings.VM_DATA_DISKS` for
-#: why count is the right thing to compromise on.
-DATA_DISK_COUNT = VM_DATA_DISKS
-
-if VM_DATA_DISKS > AHCI_PORTS:
-    raise ConfigError(
-        f"VM_DATA_DISKS is {VM_DATA_DISKS}, but QEMU's emulated AHCI has "
-        f"{AHCI_PORTS} ports.\n"
-        "The disks would not all attach, and the failure at QEMU startup is "
-        "\"Bus 'ahci.N' not found\", which says nothing about this setting.\n"
-        "Either lower VM_DATA_DISKS or use a different controller in _disk_args."
-    )
-
-#: The mount point the dry-run and install tests build their fake array at.
-FAKE_MOUNT = "/mnt/fake"
-
-# mdadm numbers its levels; settings names them the way mdadm --detail prints
-# them, so "raid0" has to become "0" for the fixture to match what the
-# installer expects to find.
-MDADM_LEVEL = EXPECTED_MD_LEVEL.removeprefix("raid")
-
-#: What the guest prints when the command has finished, and the form the
-#: command is written in so that only that print matches. The pty echoes what
-#: is sent, so the sentinel appears in the output while it is still being
-#: typed; the guest's shell removes the two quotes, so the echoed form differs
-#: from the printed one and cannot match early.
-SENTINEL = "UBUNTU_UKI_ISO-DONE"
-SENTINEL_TYPED = "UBUNTU_UKI_ISO-DO''NE"
-
-#: What expect prints when it sees the sentinel. The logs are searched for
-#: this, not for the sentinel itself.
-REACHED = "===UBUNTU_UKI_ISO-SENTINEL==="
-
-#: How much of a log is shown when a guest never got as far as its command.
-TAIL_LINES = 20
-
-TEST_NAMES: tuple[str, ...] = ("live-boot", "refuse-blank", "dry-run", "install")
-
-
-@dataclass(frozen=True)
-class Check:
-    """One assertion about a guest log.
-
-    ``ok`` and ``fail`` are the two lines it prints, so the assertion reads the
-    same here as it does on the terminal. ``evidence`` is a regex whose last
-    match is shown when the check fails — for an exit code, the number the
-    installer actually returned.
-    """
-
-    ok: str
-    fail: str
-    needle: str
-    regex: bool = False
-    evidence: str | None = None
-    #: False for a check that reports but does not fail, which is how the shell
-    #: harness treated the one message only its dry-run path printed.
-    required: bool = True
-    #: How many times the needle must appear. More than one turns a check into
-    #: a count: "the disks were examined" is only really proved by seeing it
-    #: happen once per disk, and a run that examined one and gave up would
-    #: satisfy a plain substring test.
-    minimum: int = 1
-
-
-def _acceleration() -> str:
-    """KVM where the host has it, TCG otherwise.
-
-    TCG is the normal case on the machine this runs on, which is why the
-    timeouts in settings are minutes rather than seconds.
-    """
-    try:
-        mode = os.stat(KVM).st_mode
-    except OSError:
-        return "tcg"
-    if stat.S_ISCHR(mode) and os.access(KVM, os.R_OK | os.W_OK):
-        return "kvm"
-    return "tcg"
+TEST_NAMES = ("live-boot", "refuse-blank", "create-plan", "dry-run", "install")
+# Public credentials only for the disposable guest; never used on the host.
+TEST_PASSWORD = "qemu-test-only"
+DONE = "UBUNTU_UKI_TEST_DONE"
 
 
 def _tcl_word(word: str) -> str:
-    """Quote one word for the generated script's ``spawn`` line.
-
-    The script is Tcl and ``spawn`` takes its arguments without a shell, so a
-    path that is not obviously safe gets Tcl's own quoting rather than the
-    shell's.
     """
-    if word and not set(word) & set(" \t\n{}[]$\\\"';"):
-        return word
-    return '"' + re.sub(r'([\\"$\[\]])', r"\\\1", word) + '"'
-
-
-def _tail(text: str, lines: int) -> list[str]:
-    return text.splitlines()[-lines:]
+    Quote a literal Tcl argument, including paths containing spaces.
+    """
+    return (
+        '"' + re.sub(r'([\\"$\[\]])', r"\\\1", word).replace("\n", "\\n").replace("\r", "\\r") + '"'
+    )
 
 
 class Harness:
-    """One VM-test session: host-side setup, then the tests themselves.
-
-    Stateful because the firmware, the accelerator and the disk images are
-    found once and used by every guest; the alternative is threading five
-    arguments through every call.
+    """
+    Keep virtual disk files and firmware state across installation and reboot.
     """
 
-    def __init__(self, layout: Layout, runner: Runner, console: Console) -> None:
+    def __init__(self, layout: FolderLayout) -> None:
         self.layout = layout
-        self.runner = runner
-        self.console = console
+        self.accel = "kvm" if os.access("/dev/kvm", os.R_OK | os.W_OK) else "tcg"
         self.ovmf_code = ""
         self.ovmf_vars = ""
-        self.accel = _acceleration()
-        self.root_image = layout.vm / "root.img"
-        self.data_images = tuple(
-            layout.vm / f"data{number}.img" for number in range(1, DATA_DISK_COUNT + 1)
-        )
-        self._tests: dict[str, Callable[[], bool]] = {
-            "live-boot": self._test_live_boot,
-            "refuse-blank": self._test_refuse_blank,
-            "dry-run": self._test_dry_run,
-            "install": self._test_install,
-        }
-
-    # -- host-side setup ---------------------------------------------------
+        self.root_image = layout.vm / "root.qcow2"
+        self.data_images = tuple(layout.vm / f"data{i}.qcow2" for i in range(VM_DATA_DISKS))
 
     def prepare(self) -> None:
-        """Everything that has to be true before the first guest boots."""
         if not self.layout.iso.is_file():
-            raise BuildError(f"no ISO at {self.layout.iso}.\nRun `ubuntu-uki-iso build iso` first.")
-        Runner.require(QEMU, "expect")
-        Runner.require_packages(*host_packages("build", "test"))
-        self._find_ovmf()
-        self._make_disks()
-
-    def _find_ovmf(self) -> None:
-        for candidate in OVMF_CANDIDATES:
-            if "secboot" in candidate:
-                continue
-            if Path(candidate).is_file():
-                self.ovmf_code = candidate
-                break
-
-        if not self.ovmf_code:
-            looked = "\n  ".join(c for c in OVMF_CANDIDATES if "secboot" not in c)
             raise BuildError(
-                "no OVMF firmware found; the VM tests need it to boot the ISO the way "
-                f"the machine does.\nLooked for:\n  {looked}\nInstall the `ovmf` package."
+                f"ISO missing: {self.layout.iso}; build it with ubuntu-uki-image first"
             )
-
-        # Only the 4M firmware has a matching NVRAM template; without one QEMU
-        # is given the code image alone, and efibootmgr's writes go nowhere
-        # that outlives the run.
-        if self.ovmf_code.endswith("OVMF_CODE_4M.fd") and Path(OVMF_VARS_4M).is_file():
-            self.ovmf_vars = OVMF_VARS_4M
-
-    def _make_disks(self) -> None:
-        """Create the images that have not been created yet.
-
-        ``truncate`` makes them sparse, so the sizes are about what the guest
-        sees rather than what the disk holds: a 2 GB disk behaves exactly
-        like an 8 TB one for everything the tests check.
-        """
+        missing = [
+            tool for tool in (QEMU, "qemu-img", "expect", "timeout") if not shutil.which(tool)
+        ]
+        if missing:
+            raise ToolMissing(*missing)
+        for code, variables in OVMF_PAIRS:
+            if Path(code).is_file() and Path(variables).is_file():
+                self.ovmf_code, self.ovmf_vars = code, variables
+                break
+        else:
+            raise BuildError("Install ovmf: a matching unsigned OVMF CODE/VARS pair is required")
         self.layout.vm.mkdir(parents=True, exist_ok=True)
         self.layout.vm_logs.mkdir(parents=True, exist_ok=True)
-
-        sizes = (
-            (self.root_image, VM_ROOT_DISK_SIZE),
-            *((image, VM_DATA_DISK_SIZE) for image in self.data_images),
-        )
-        for path, size in sizes:
-            if not path.exists():
-                self.runner.run("truncate", "-s", size, path, check=False)
+        print(f"OVMF: {self.ovmf_code}; acceleration: {self.accel}")
+        print("Storage: 1 TB NVMe SSD + eight 8 TB SATA HDDs; sparse qcow2 files")
 
     def _reset_disks(self) -> None:
-        """Throw the images away and start from blank ones.
+        for image, size in (
+            (self.root_image, VM_ROOT_DISK_SIZE),
+            *((image, VM_DATA_DISK_SIZE) for image in self.data_images),
+        ):
+            image.unlink(missing_ok=True)
+            subprocess.run(["qemu-img", "create", "-f", "qcow2", str(image), str(size)], check=True)
 
-        A test that begins from whatever the last one left behind proves
-        nothing about what happens on a blank machine, and sparse files are
-        cheap enough to be worth the certainty.
+    def _qemu_argv(self, name: str, *, installed: bool = False, data: bool = True) -> list[str]:
         """
-        self.runner.run("rm", "-f", self.root_image, *self.data_images, check=False)
-        self._make_disks()
-
-    def report(self) -> None:
-        """What this run is about to do, before it spends fifteen minutes doing it."""
-        self.console.step("ubuntu-uki-iso VM tests")
-        self.console.info(f"iso:        {self.layout.iso}")
-        self.console.info(f"ovmf code:  {self.ovmf_code}")
-        self.console.info(f"ovmf vars:  {self.ovmf_vars or '(none; NVRAM will not persist)'}")
-        note = "  (no KVM — boots are slow, this is expected)" if self.accel == "tcg" else ""
-        self.console.info(f"accel:      {self.accel}{note}")
-        self.console.info(
-            f"disks:      {VM_ROOT_DISK_SIZE} root (nvme) + "
-            f"{DATA_DISK_COUNT}x {VM_DATA_DISK_SIZE} (ahci)"
-        )
-
-    # -- running one guest -------------------------------------------------
-
-    def _qemu_argv(self, name: str) -> list[str]:
-        """The QEMU command line for one guest.
-
-        The root disk is NVMe and the data disks are AHCI on purpose: those are
-        the two driver paths the real machine takes, so the installer is driven
-        down the same code it will run on the machine.
-
-        The ISO is attached as a **USB stick**, not as a CD-ROM, because that is
-        how it is deployed — and the difference is not cosmetic. A CD-ROM goes
-        through El Torito, which firmware reads from the boot catalog. A USB
-        stick goes through the partition table: the firmware finds the ESP on
-        the ISO's GPT and runs the UKI from it. Those are different code paths
-        in the firmware and only the second one is used in practice.
-
-        It also means this harness is the only thing that ever *executes* the
-        hybrid layout. ``build/iso.py`` parses the finished GPT and refuses an
-        image without an EFI System Partition, but parsing proves the bytes are
-        there and not that firmware will boot them. Until this ran, that
-        distinction was untested.
+        Attach file-backed storage, explicit network/USB controllers and writable NVRAM.
         """
         argv = [
             QEMU,
             "-machine",
             f"q35,accel={self.accel}",
+            "-cpu",
+            "host" if self.accel == "kvm" else "max",
             "-m",
             str(VM_MEMORY_MB),
             "-smp",
             str(VM_CPUS),
             "-display",
             "none",
+            "-monitor",
+            "none",
             "-serial",
             "stdio",
             "-no-reboot",
+            "-drive",
+            f"if=pflash,format=raw,unit=0,readonly=on,file={self.ovmf_code}",
+            "-drive",
+            f"if=pflash,format=raw,unit=1,file={self.layout.vm / (name + '-VARS.fd')}",
+            "-netdev",
+            "user,id=net0",
+            "-device",
+            "e1000e,netdev=net0",
+            "-drive",
+            f"file={self.root_image},if=none,id=rootdisk,format=qcow2,discard=unmap",
+            "-device",
+            f"nvme,serial=ROOTDISK,drive=rootdisk,bootindex={1 if installed else 2}",
         ]
-
-        if self.ovmf_vars:
-            nvram = self.layout.vm / f"{name}-VARS.fd"
+        if data:
+            for index in range((VM_DATA_DISKS + AHCI_PORTS - 1) // AHCI_PORTS):
+                argv += ["-device", f"ich9-ahci,id=sata{index}"]
+            for index, image in enumerate(self.data_images):
+                argv += [
+                    "-drive",
+                    f"file={image},if=none,id=d{index},format=qcow2,discard=unmap",
+                    "-device",
+                    f"ide-hd,drive=d{index},bus=sata{index // AHCI_PORTS}.{index % AHCI_PORTS},serial=DATA{index},rotation_rate=7200",
+                ]
+        if not installed:
             argv += [
+                "-device",
+                "qemu-xhci,id=xhci",
                 "-drive",
-                f"if=pflash,format=raw,unit=0,readonly=on,file={self.ovmf_code}",
-                "-drive",
-                f"if=pflash,format=raw,unit=1,file={nvram}",
+                f"file={self.layout.iso},if=none,id=usbstick,format=raw,readonly=on",
+                "-device",
+                "usb-storage,drive=usbstick,removable=on,bootindex=1",
             ]
-        else:
-            argv += ["-bios", self.ovmf_code]
-
-        argv += self._disk_args()
-        argv += self._usb_stick_args()
-
-        # The root disk is blank and carries no bootloader, so with no boot
-        # order to prefer, firmware falls to the USB stick. That is the same
-        # thing it does on the real machine when the ESP is the only bootable
-        # thing it can find.
-        argv += ["-boot", "menu=off,order=c"]
         return argv
 
-    def _usb_stick_args(self) -> list[str]:
-        """The installation medium, as a USB mass storage device.
-
-        This is the medium the live environment will *see*, and it consumes a
-        ``/dev/sd*`` letter like any other disk — which is why the tests
-        discover the data disks instead of naming them. See
-        :meth:`_data_disks_shell`.
+    def _expect_script(
+        self, name: str, command: str, *, installed: bool = False, data: bool = True
+    ) -> str:
         """
-        return [
-            "-device",
-            "qemu-xhci,id=xhci",
-            "-drive",
-            f"file={self.layout.iso},if=none,id=usbstick,format=raw,readonly=on",
-            "-device",
-            "usb-storage,drive=usbstick,id=stick",
-        ]
-
-    def _disk_args(self) -> list[str]:
-        """The drives, in the order the guest's device names come out of.
-
-        One controller carries every data disk, which is what makes them
-        ``/dev/sda`` upward in the order they are listed. The tests name those
-        devices explicitly, so the order is load-bearing.
-
-        AHCI rather than something more capacious, because on the real machine
-        the eight data disks are on AHCI too — and exercising the controller
-        the array actually lives on is worth more than exercising the eighth
-        disk. QEMU's emulated ICH9 AHCI has ``AHCI_PORTS`` ports, which is why
-        :data:`VM_DATA_DISKS` is what it is; the module-level check refuses a
-        count that would not fit rather than letting QEMU fail with
-        "Bus 'ahci.6' not found", which names nothing useful.
-
-        The root disk stays NVMe emulation, because that one is fully faithful:
-        the machine's root disk really is NVMe, and ``BLK_DEV_NVME`` gets
-        exercised on its own path rather than as a second SCSI disk.
+        Transfer the script without echoed assertions, then check its actual exit status.
         """
-        args = [
-            "-drive",
-            f"file={self.root_image},if=none,id=rootdisk,format=raw,cache=unsafe",
-            "-device",
-            "nvme,serial=ROOTDISK,drive=rootdisk",
-            "-device",
-            "ahci,id=ahci",
-        ]
-        for index, image in enumerate(self.data_images):
-            args += [
-                "-drive",
-                f"file={image},if=none,id=d{index},format=raw,cache=unsafe",
-                "-device",
-                f"ide-hd,drive=d{index},bus=ahci.{index},serial=DATA{index}",
-            ]
-        return args
-
-    def _expect_script(self, name: str, command: str) -> str:
-        """The expect program that boots one guest and runs one command.
-
-        It waits for the login prompt, logs in, waits for a shell prompt, sends
-        the command and a carriage return as two separate sends, waits for the
-        sentinel, and powers off. Nothing between those points is parsed: the
-        guest's output is left in the log for the assertions to search, so a
-        test that never reaches the sentinel is a boot that did not get that
-        far rather than a prompt that was misread.
-        """
-        spawn = " ".join(_tcl_word(word) for word in self._qemu_argv(name))
-        typed = f"{command}\necho {SENTINEL_TYPED}"
-
+        command = (
+            'trap \'printf "FAILED line %s: %s\\n" "$LINENO" "$BASH_COMMAND" >&2\' ERR\n' + command
+        )
+        payload = base64.encodebytes(command.encode()).decode().strip()
+        # Keep input lines below the serial terminal's canonical input limit.
+        launch = (
+            "cat > /tmp/vm-check.b64 <<'VM_PAYLOAD'\n"
+            + payload
+            + "\nVM_PAYLOAD\nbase64 -d /tmp/vm-check.b64 > /tmp/vm-check; "
+            "bash -euo pipefail /tmp/vm-check; rc=$?; "
+            "printf '\\nUBUNTU_UKI_TEST_%s:%s\\n' DONE $rc"
+        )
+        shutdown = f"printf '%s\\n' {TEST_PASSWORD} | sudo -S poweroff" if installed else "poweroff"
         lines = [
             f"set timeout {VM_BOOT_TIMEOUT}",
             "log_user 1",
-            f"spawn {spawn}",
+            "spawn "
+            + " ".join(
+                _tcl_word(word) for word in self._qemu_argv(name, installed=installed, data=data)
+            ),
             "expect {",
-            '  -re {login: } { send -- "root\\r"; exp_continue }',
-            "  -re {[#$] $} { }",
-            '  timeout { puts "\\n===UBUNTU_UKI_ISO-TIMEOUT-BOOT==="; exit 42 }',
-            '  eof { puts "\\n===UBUNTU_UKI_ISO-EOF-BOOT==="; exit 43 }',
+            f'  -re {{login: }} {{ send -- "{"vmtest" if installed else "root"}\\r"; exp_continue }}',
+            f'  -re {{Password: }} {{ send -- "{TEST_PASSWORD}\\r"; exp_continue }}',
+            "  -re {[#$] $} {}",
+            "  timeout { exit 42 }",
+            "  eof { exit 43 }",
             "}",
             f"set timeout {VM_COMMAND_TIMEOUT}",
-            # Braces keep Tcl from expanding $ and [] inside the guest command;
-            # the carriage return is a separate send for the same reason.
-            f"send -- {{{typed}}}",
-            'send -- "\\r"',
+            "set send_slow {128 0.01}",
+            "send -s -- " + _tcl_word(launch.replace("\n", "\r") + "\r"),
             "expect {",
-            f'  -re {{{SENTINEL}}} {{ puts "\\n{REACHED}" }}',
-            '  timeout { puts "\\n===UBUNTU_UKI_ISO-TIMEOUT-CMD==="; exit 44 }',
-            '  eof { puts "\\n===UBUNTU_UKI_ISO-EOF-CMD==="; exit 45 }',
+            f"  -re {{{DONE}:([0-9]+)}} {{ set rc $expect_out(1,string) }}",
+            "  timeout { exit 44 }",
+            "  eof { exit 45 }",
             "}",
-            'send -- "poweroff\\r"',
-            "expect eof",
-            "exit 0",
+            "send -- " + _tcl_word(shutdown + "\r"),
+            "expect { eof {} timeout { exit 46 } }",
+            "exit $rc",
             "",
         ]
         return "\n".join(lines)
 
-    def _guest_run(self, name: str, command: str) -> bool:
-        """Boot, run one command, power off. True if the command finished.
-
-        The outer ``timeout`` is the backstop for a guest that hangs before the
-        sentinel; the script's own timeouts are per phase, and a guest that
-        stalls outside both would otherwise hold the run open indefinitely.
-        """
-        log = self.layout.vm_logs / f"{name}.log"
-        script = self.layout.vm / f"{name}.exp"
-
-        if self.ovmf_vars:
-            # Per-run NVRAM, so efibootmgr writes are contained to the test
-            # that made them instead of leaking into the next guest's boot
-            # entries.
+    def _guest_run(
+        self, name: str, command: str, *, installed: bool = False, data: bool = True
+    ) -> bool:
+        if not installed:
             shutil.copyfile(self.ovmf_vars, self.layout.vm / f"{name}-VARS.fd")
-
-        script.write_text(self._expect_script(name, command), encoding="utf-8")
-
-        self.console.info(f"guest: {name}  (accel={self.accel}, log {self._shown(log)})")
-        log.unlink(missing_ok=True)
-
-        result = self.runner.run(
-            "timeout",
-            str(VM_BOOT_TIMEOUT + VM_COMMAND_TIMEOUT),
-            "expect",
-            "-f",
-            script,
-            check=False,
-            log=log,
+        script = self.layout.vm / f"{name}.exp"
+        script.write_text(self._expect_script(name, command, installed=installed, data=data))
+        log = (
+            self.layout.vm_logs
+            / f"{name}{'-installed' if installed else ''}{'-no-data' if not data else ''}.log"
         )
-
-        text = self._log_text(name)
-        if REACHED not in text:
-            self.console.error(
-                f"{name}: the guest never reached the sentinel (expect rc={result.returncode})"
+        print(f"Booting {name}, installed={installed}, data={data}; log: {log}", flush=True)
+        with log.open("w") as stream:
+            result = subprocess.run(
+                [
+                    "timeout",
+                    str(VM_BOOT_TIMEOUT + VM_COMMAND_TIMEOUT + 60),
+                    "expect",
+                    "-f",
+                    str(script),
+                ],
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=False,
             )
-            self.console.info(f"last lines of {self._shown(log)}:")
-            for line in _tail(text, TAIL_LINES):
-                self.console.grey(line)
-            return False
+        text = log.read_text(errors="replace").replace("\r", "")
+        ok = result.returncode == 0 and re.search(rf"^{DONE}:0$", text, re.M) is not None
+        if not ok:
+            lines = text.splitlines()
+            end = next(
+                (i + 1 for i, line in enumerate(lines) if re.fullmatch(rf"{DONE}:[0-9]+", line)),
+                len(lines),
+            )
+            print("\n".join(lines[max(0, end - 30) : end]), file=sys.stderr)
+        return ok
 
-        self.console.ok(f"{name} reached the shell and ran the command")
-        return True
-
-    # -- reading the logs --------------------------------------------------
-
-    def _log_text(self, name: str) -> str:
-        path = self.layout.vm_logs / f"{name}.log"
-        if not path.is_file():
-            return ""
-        # The console emits CRs and the guest's output is not always valid
-        # UTF-8. Neither is content, and neither should stop a test being read
-        # — a log that cannot be decoded is exactly when it is wanted.
-        text = path.read_text(encoding="utf-8", errors="replace")
-        return text.replace("\r\n", "\n").replace("\r", "")
-
-    def _show_evidence(self, text: str, pattern: str | None) -> None:
-        if pattern is None:
-            return
-        for match in re.findall(pattern, text)[-1:]:
-            self.console.grey(match)
-
-    def _assert(self, name: str, checks: Sequence[Check]) -> bool:
-        text = self._log_text(name)
-        passed = True
-        for check in checks:
-            if check.regex:
-                occurrences = len(re.findall(check.needle, text))
-            else:
-                occurrences = text.count(check.needle)
-            found = occurrences >= check.minimum
-
-            if found:
-                self.console.ok(check.ok)
-            elif check.required:
-                self.console.error(check.fail)
-                if occurrences:
-                    self.console.error(f"  expected at least {check.minimum}, found {occurrences}")
-                self._show_evidence(text, check.evidence)
-                passed = False
-        return passed
-
-    def _shown(self, path: Path) -> str:
-        """A path as the operator would type it, when it is inside the workspace."""
-        try:
-            return str(path.relative_to(self.layout.root))
-        except ValueError:
-            return str(path)
-
-    # -- guest-side fixtures -----------------------------------------------
-
-    def _data_disks_shell(self, var: str = "DATA") -> str:
-        """Shell that discovers the data disks from inside the guest.
-
-        Names are discovered rather than hardcoded because the installation
-        medium is itself a ``/dev/sd*`` device — it is attached over USB, so it
-        consumes a letter like any other disk — and which letter it takes
-        depends on the order the controllers are enumerated.
-
-        That order is probably stable, and "probably stable" is exactly the
-        kind of assumption that produces a test failing for reasons that look
-        like a bug in the installer. Asking the guest what it has removes the
-        question: the data disks are every ``sd*`` disk except the one carrying
-        the ISO's volume label.
-
-        The NVMe root disk never matches ``/dev/sd?``, so it needs no
-        excluding.
+    @staticmethod
+    def _data_disks_shell() -> str:
+        """
+        Discover fixture disks by serial rather than unstable sd* letters.
         """
         return "\n".join(
             [
-                f'{var}=""',
-                f"LIVE=$(blkid -L {VOLID} 2>/dev/null)",
-                "for d in /dev/sd?; do",
-                '  [ "$d" = "$LIVE" ] && continue',
-                f'  {var}="${var} $d"',
+                "udevadm settle",
+                "DATA=''",
+                'for link in /dev/disk/by-id/ata-*DATA*; do DATA="$DATA $(readlink -f "$link")"; done',
+                f'[ "$(printf "%s\\n" $DATA | sort -u | wc -l)" -eq {VM_DATA_DISKS} ]',
+            ]
+        )
+
+    def _fake_array(self) -> str:
+        """
+        Populate a small ext4 fixture on the full-size RAID0 to keep VM writes modest.
+        """
+        return "\n".join(
+            [
+                self._data_disks_shell(),
+                f"mdadm --create /dev/md0 --level=0 --raid-devices={VM_DATA_DISKS} --chunk={storage.EXPECTED_MD_CHUNK} --metadata={storage.RAID_METADATA_VERSION} --uuid={storage.EXPECTED_MD_UUID} --run $DATA",
+                # 1 GiB filesystem on the 64 TB device; geometry/discovery still see all eight 8 TB disks.
+                "mkfs.ext4 -q -F -b 4096 /dev/md0 262144",
+                "mkdir -p /mnt/fixture; mount /dev/md0 /mnt/fixture",
+                "echo precious-data > /mnt/fixture/canary; sync; umount /mnt/fixture",
+                "mdadm --stop /dev/md0",
+            ]
+        )
+
+    def _checksums(self, destination: str) -> str:
+        """
+        Hash partition/RAID metadata regions; avoid reading 65 TB of sparse disks.
+        """
+        return "\n".join(
+            [
+                f": > {destination}",
+                "for d in /dev/nvme0n1 $DATA; do",
+                '  sectors=$(blockdev --getsz "$d")',
+                f'  {{ dd if="$d" bs=512 count=8192 status=none; dd if="$d" bs=512 skip=$((sectors-8192)) count=8192 status=none; }} | sha256sum >> {destination}',
                 "done",
             ]
         )
 
-    def _installer(self, *leading: str) -> str:
-        """The installer as it exists inside the live image.
-
-        One place, because the command moved from a script in the ISO to a
-        console script on PATH and will move again.
-
-        ``--expected-md-devices`` is set here rather than left at its
-        default. The harness emulates a smaller array than the machine has, and
-        the installer verifies the member count it finds against what it
-        expects — so the two have to agree. Passing it also means the setting
-        is exercised: a value plumbed through correctly is the only kind that
-        can be wrong here.
-        """
-        return "\n".join(
-            (
-                self._data_disks_shell(),
-                " ".join(
-                    (
-                        "ubuntu-uki-install",
-                        f"--expected-md-devices={VM_DATA_DISKS}",
-                        *leading,
-                        "--root-disk",
-                        ROOT_DEVICE,
-                        "--data-disks",
-                        '"$DATA"',
-                        "--raid=reuse",
-                    )
+    def run(self, name: str) -> bool:
+        self._reset_disks()
+        if name == "live-boot":
+            return self._guest_run(
+                name,
+                "\n".join(
+                    [
+                        "test -d /sys/firmware/efi/efivars",
+                        "findmnt -n -o FSTYPE / | grep -x overlay",
+                        "findmnt -n -o FSTYPE /run/initramfs/installer | grep -x squashfs",
+                        "findmnt -n -o OPTIONS /run/rootfsbase | grep 'lowerdir=/run/initramfs/installer:/run/initramfs/shared-base'",
+                        "test -f /run/initramfs/live/payload/boot-installed.deb",
+                        "test -f /run/initramfs/live/payload/base.squashfs",
+                        "lsblk -b -o NAME,SIZE,ROTA,TRAN,SERIAL",
+                        self._data_disks_shell(),
+                        f'test "$(blockdev --getsize64 /dev/nvme0n1)" = {VM_ROOT_DISK_SIZE}',
+                        'test "$(cat /sys/block/nvme0n1/queue/rotational)" = 0',
+                        f'for d in $DATA; do test "$(blockdev --getsize64 "$d")" = {VM_DATA_DISK_SIZE}; test "$(cat /sys/block/$(basename "$d")/queue/rotational)" = 1; done',
+                        "lsblk -dn -o TRAN | grep -x usb",
+                        "systemctl is-active NetworkManager",
+                        "timeout 120 nm-online -q",
+                        "ip -4 route show default | grep default",
+                        'for package in docker.io openssh-server linux-firmware-nvidia-graphics; do test "$(dpkg-query -W -f=\'${db:Status-Status}\' "$package")" = installed; done',
+                        'for unit in docker.service docker.socket containerd.service ssh.service ssh.socket; do test "$(systemctl is-enabled "$unit" || true)" = disabled; if systemctl is-active --quiet "$unit"; then exit 1; fi; done',
+                        'test "$(systemctl is-enabled mdmonitor.service || true)" = masked',
+                        "ubuntu-uki-install --help",
+                    ]
                 ),
             )
-        )
+        if name in ("refuse-blank", "create-plan", "dry-run"):
+            fixture = self._fake_array() if name == "dry-run" else self._data_disks_shell()
+            invocation = "ubuntu-uki-install --dry-run"
+            expected = 0
+            if name == "refuse-blank":
+                invocation = "ubuntu-uki-install --apply --assume-yes --raid reuse"
+                expected = 2
+            return self._guest_run(
+                name,
+                "\n".join(
+                    [
+                        fixture,
+                        self._checksums("/tmp/before"),
+                        "set +e",
+                        invocation + " > /tmp/installer.log 2>&1",
+                        "rc=$?",
+                        "set -e",
+                        "cat /tmp/installer.log",
+                        f"test $rc -eq {expected}",
+                        *(
+                            ["grep -F 'CREATE a new raid0 array' /tmp/installer.log"]
+                            if name == "create-plan"
+                            else []
+                        ),
+                        self._checksums("/tmp/after"),
+                        "cmp /tmp/before /tmp/after",
+                    ]
+                ),
+            )
+        if name == "install":
+            return self._install(name)
+        raise ConfigError(f"unknown VM test: {name}")
 
-    def _fake_array(self) -> str:
-        """Build a populated array in the guest, then take it down again.
-
-        This is the state the real machine is in, and the reuse path is only
-        reachable from it: with blank disks the installer refuses, which is
-        what the blank-disk test is for. The array is built and filled from
-        inside the guest, through the emulated devices, because building it on
-        the host would mean the loop devices this harness exists to avoid.
-        """
-        return "\n".join(
-            [
-                self._data_disks_shell(),
-                'echo "data disks:$DATA"',
-                f"mdadm --create {MD_DEVICE} --level={MDADM_LEVEL} "
-                f"--raid-devices={VM_DATA_DISKS} --chunk={EXPECTED_MD_CHUNK} "
-                f"--metadata={RAID_METADATA_VERSION} --uuid={EXPECTED_MD_UUID} "
-                f"--run $DATA",
-                f"mkfs.ext4 -q -L fakearray {MD_DEVICE}",
-                f"mkdir -p {FAKE_MOUNT}; mount {MD_DEVICE} {FAKE_MOUNT}",
-                f"echo precious-data > {FAKE_MOUNT}/canary.txt; sync; umount {FAKE_MOUNT}",
-                f"mdadm --stop {MD_DEVICE}",
+    def _install(self, name: str) -> bool:
+        ssh_checks = []
+        if key := storage.SSH_PUBLIC_KEY.strip():
+            ssh_checks = [
+                "test $(stat -c %a /mnt/target/home/vmtest/.ssh) = 700",
+                "test $(stat -c %a /mnt/target/home/vmtest/.ssh/authorized_keys) = 600",
+                'owner="$(chroot /mnt/target id -u vmtest):$(chroot /mnt/target id -g vmtest)"',
+                'for path in /mnt/target/home/vmtest/.ssh /mnt/target/home/vmtest/.ssh/authorized_keys; do test "$(stat -c %u:%g "$path")" = "$owner"; done',
+                f"grep -Fx -- {shlex.quote(key)} /mnt/target/home/vmtest/.ssh/authorized_keys",
             ]
-        )
-
-    # -- the tests ---------------------------------------------------------
-
-    def run(self, name: str) -> bool:
-        self.console.rule(f"test: {name}")
-        return self._tests[name]()
-
-    def _test_live_boot(self) -> bool:
-        name = "live-boot"
-        # The block-device listing rides along here because this is the first
-        # guest that boots, and every later test addresses the data disks by
-        # name. Checking the names here means a controller or ordering surprise
-        # is reported as "these are the devices the guest actually has" instead
-        # of surfacing later as an installer refusal that looks like a bug in
-        # the safety logic.
         command = "\n".join(
             [
-                "echo BEGIN",
-                "findmnt -n -o FSTYPE /",
-                "cat /proc/cmdline",
-                "ls -l /run/initramfs/live/payload/rootfs.squashfs",
-                "ls -l /run/initramfs/live/payload/uki.efi",
-                "ls -l /run/initramfs/live/live/filesystem.squashfs",
-                self._data_disks_shell(),
-                'set -- $DATA; echo "data-disks:$#"',
-                "lsblk -dn -o NAME,SIZE,TRAN",
-                "echo END",
-            ]
-        )
-        if not self._guest_run(name, command):
-            return False
-
-        return self._assert(
-            name,
-            [
-                Check("/ is an overlay", "/ is not an overlay", "overlay", regex=True),
-                Check(
-                    "the live cmdline reached userspace",
-                    "/proc/cmdline does not carry rd.live.dir=/live",
-                    "rd.live.dir=/live",
-                ),
-                Check(
-                    "the payload is visible on the medium",
-                    "the payload squashfs is not on the mounted medium",
-                    "rootfs.squashfs",
-                ),
-                Check(
-                    "the installed UKI is on the medium",
-                    "no installed UKI on the medium",
-                    "uki.efi",
-                ),
-                # That the ISO booted at all is proved by reaching this point.
-                # How it booted is worth asserting separately: a USB transport
-                # means firmware read the ISO's GPT and found the ESP on it,
-                # whereas a CD-ROM would have gone through El Torito and proved
-                # nothing about the hybrid layout. Those are different code
-                # paths, and only one of them is used in practice.
-                Check(
-                    "the live medium arrived over USB",
-                    "the medium is not on a USB transport — this run did not "
-                    "exercise the path the machine actually boots from",
-                    r"usb\s*$",
-                    regex=True,
-                ),
-                Check(
-                    "the guest sees the root disk as NVMe",
-                    "the guest has no /dev/nvme0n1",
-                    "nvme0n1",
-                ),
-                # A count rather than names: the installation medium is itself
-                # an sd* disk, so which letters the data disks get depends on
-                # enumeration order. See _data_disks_shell.
-                Check(
-                    f"the guest found exactly {VM_DATA_DISKS} data disks",
-                    f"the guest did not find {VM_DATA_DISKS} data disks — the "
-                    "installer is about to be pointed at the wrong set",
-                    f"data-disks:{VM_DATA_DISKS}",
-                ),
-            ],
-        )
-
-    def _test_refuse_blank(self) -> bool:
-        name = "refuse-blank"
-        self._reset_disks()
-
-        # --apply, not --dry-run, and that is the whole design of this test.
-        #
-        # Under --dry-run nothing is written whatever the installer decides, so
-        # DISKS-UNCHANGED would hold even if the refusal never fired. Running
-        # with --apply makes the refusal the *only* thing standing between the
-        # guest's disks and a partition table — so if the blank-disk check ever
-        # regresses, this test writes to the disks and says so.
-        #
-        # --assume-yes skips the typed confirmation, which the installer
-        # requires before any destructive command. It is safe to skip precisely
-        # because the run should never reach one.
-        #
-        # The checksums are taken inside the guest, so the disks are proved
-        # untouched rather than assumed to be.
-        command = "\n".join(
-            [
-                "echo BEGIN",
-                self._data_disks_shell(),
-                "md5sum $DATA > /tmp/before.md5",
-                self._installer("--apply --assume-yes"),
-                'echo "RC=$?"',
-                "md5sum $DATA > /tmp/after.md5",
-                "if diff -q /tmp/before.md5 /tmp/after.md5 >/dev/null; "
-                "then echo DISKS-UNCHANGED; else echo DISKS-CHANGED; "
-                "diff /tmp/before.md5 /tmp/after.md5; fi",
-                "echo END",
-            ]
-        )
-        if not self._guest_run(name, command):
-            return False
-
-        return self._assert(
-            name,
-            [
-                Check("the installer refused", "no refusal was printed", "REFUSING"),
-                Check(
-                    "exited non-zero (2)",
-                    "expected exit code 2 on refusal",
-                    "RC=2",
-                    evidence=r"RC=[0-9]+",
-                ),
-                Check(
-                    "said so explicitly",
-                    "did not state that nothing had been changed",
-                    "Nothing has been changed",
-                ),
-                Check(
-                    "every data disk byte-identical after the refusal",
-                    "a disk changed during a run that refused to do anything",
-                    "DISKS-UNCHANGED",
-                ),
-            ],
-        )
-
-    def _test_dry_run(self) -> bool:
-        name = "dry-run"
-        self._reset_disks()
-
-        setup = "\n".join(
-            [
-                "echo BEGIN",
                 self._fake_array(),
-                self._data_disks_shell(),
-                "md5sum $DATA > /tmp/before.md5",
-                "cat /tmp/before.md5",
-                "echo END",
-            ]
-        )
-        if not self._guest_run(f"{name}-setup", setup):
-            return False
-
-        command = "\n".join(
-            [
-                "echo BEGIN",
-                self._installer("--dry-run"),
-                'echo "RC=$?"',
-                "md5sum $DATA > /tmp/after.md5",
-                "if diff -q /tmp/before.md5 /tmp/after.md5 >/dev/null; "
-                "then echo ARRAY-BYTES-UNCHANGED; else echo ARRAY-BYTES-CHANGED; "
-                "diff /tmp/before.md5 /tmp/after.md5; fi",
-                "echo END",
+                "efibootmgr | grep -E '^(BootOrder|BootNext):' > /tmp/efi-before",
+                f"umask 077; printf '%s\\n' {TEST_PASSWORD} > /run/install-password",
+                "ubuntu-uki-install --apply --assume-yes --username vmtest --password-file /run/install-password",
+                "rm /run/install-password",
+                "efibootmgr | grep -E '^(BootOrder|BootNext):' > /tmp/efi-after",
+                "cmp /tmp/efi-before /tmp/efi-after",
+                f"efibootmgr -v | grep -F {shlex.quote(BOOT_LABEL)} | grep -Fi 'BOOTX64.EFI'",
+                "mkdir -p /mnt/target; mount /dev/nvme0n1p2 /mnt/target",
+                "mount /dev/nvme0n1p1 /mnt/target/boot/efi",
+                "cmp /run/initramfs/live/payload/uki.efi /mnt/target/boot/efi/EFI/BOOT/BOOTX64.EFI",
+                "chroot /mnt/target id vmtest | grep sudo",
+                *ssh_checks,
+                f"grep -F {shlex.quote(storage.DATA_MOUNT_OPTIONS)} /mnt/target/etc/fstab",
+                "umount /mnt/target/boot/efi; umount /mnt/target",
             ]
         )
         if not self._guest_run(name, command):
             return False
-
-        return self._assert(
-            name,
+        # Firmware bootindex selects NVMe explicitly; postinst never changes BootOrder/BootNext.
+        checks = "\n".join(
             [
-                Check("ran in dry-run mode", "did not run in dry-run mode", "DRY-RUN"),
-                Check(
-                    "reported that nothing was changed",
-                    "did not report that nothing changed",
-                    "Nothing was changed",
-                ),
-                Check(
-                    "every data disk byte-identical after the run",
-                    "the data disks were modified by a dry run",
-                    "ARRAY-BYTES-UNCHANGED",
-                ),
-                # The check above passes just as well for a preflight that
-                # never looked at the disks, so this asserts the opposite: that
-                # each one was examined and recognised.
-                #
-                # Twenty times over, because "md member" appears once per disk
-                # in the scan report — a run that examined one disk and gave up
-                # would not reach the count.
-                #
-                # Note what is deliberately NOT asserted: that the array was
-                # assembled. Assembling is a mutation, so a dry run does not do
-                # it, and a test demanding it would be demanding that dry runs
-                # mutate.
-                Check(
-                    "every data disk was examined and found to be an md member",
-                    "the disks were never examined",
-                    "md member",
-                    minimum=DATA_DISK_COUNT,
-                ),
-            ],
-        )
-
-    def _test_install(self) -> bool:
-        name = "install"
-        self._reset_disks()
-
-        # The array comes first: --raid=reuse refuses blank disks by design,
-        # so an install run with nothing on them would be testing the refusal
-        # again rather than the install.
-        command = "\n".join(
-            [
-                "echo BEGIN",
-                self._fake_array(),
-                self._installer("--apply", "--assume-yes"),
-                'echo "RC=$?"',
-                "B=/mnt/ubuntu-uki-iso-target; mkdir -p $B; mount /dev/nvme0n1p2 $B",
-                "mount /dev/nvme0n1p1 $B/boot/efi",
-                "ls -l $B/boot/efi/EFI/BOOT/BOOTX64.EFI",
-                "cat $B/etc/kernel/cmdline",
-                "ls $B/usr/lib/modules/ | sed 's/^/modules:/'",
-                "cmp /run/initramfs/live/payload/uki.efi $B/boot/efi/EFI/BOOT/BOOTX64.EFI"
-                " && echo uki-identical",
-                f"efibootmgr | grep -F {BOOT_LABEL}",
-                "umount $B/boot/efi; umount $B",
-                "echo END",
+                'test "$(id -un)" = vmtest',
+                "id -nG | grep -w sudo",
+                "findmnt -n -o SOURCE / | grep nvme0n1p2",
+                f"grep -F 'root=PARTLABEL={ROOT_LABEL}' /proc/cmdline",
+                "test ! -e /run/initramfs/live/payload/base.squashfs",
+                "test -d /usr/lib/modules/$(uname -r)",
+                "systemctl is-active NetworkManager",
+                "systemctl is-active ssh",
+                "test ! -e /opt/ubuntu-uki-installer",
+                "test ! -e /etc/systemd/system/getty@tty1.service.d/autologin.conf",
+                "test ! -e /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf",
+                "timeout 120 nm-online -q",
+                "ip -4 route show default | grep default",
             ]
         )
-        if not self._guest_run(name, command):
+        if not self._guest_run(
+            name, checks + "\ncat /mnt/raid0/canary | grep -x precious-data", installed=True
+        ):
             return False
-
-        return self._assert(
-            name,
-            [
-                Check("installer exited 0", "installer did not exit 0", "RC=0"),
-                Check(
-                    "matching runtime modules landed",
-                    "no installed runtime modules",
-                    "modules:",
-                    regex=False,
-                ),
-                Check("the ESP has the supplied UKI", "the ESP UKI differs", "uki-identical"),
-                Check(
-                    "the target's cmdline names the partition it was installed to",
-                    "the cmdline does not carry the configured GPT PARTLABEL: the UKI and the "
-                    "partition table disagree about which filesystem is the root",
-                    f"root=PARTLABEL={ROOT_LABEL}",
-                ),
-                Check("a UKI landed on the ESP", "no UKI on the ESP", "BOOTX64.EFI"),
-                Check("firmware entry created", "no firmware entry", BOOT_LABEL),
-            ],
-        )
-
-    def summary(self, selected: Sequence[str], failed: Sequence[str]) -> None:
-        self.console.rule()
-        if failed:
-            self.console.error(f"FAILED: {', '.join(failed)}")
-        else:
-            self.console.info(f"all {len(selected)} tests passed")
-        self.console.info(f"logs: {self._shown(self.layout.vm_logs)}")
+        return self._guest_run(name, checks + "\n! findmnt /mnt/raid0", installed=True, data=False)
 
 
-def run_tests(
-    which: str = "all",
-    layout: Layout | None = None,
-    runner: Runner | None = None,
-    console: Console | None = None,
-) -> int:
-    """Run the QEMU tests for the built ISO. 0 if they all passed, 1 otherwise.
-
-    A missing ISO, a missing tool or a missing firmware raises rather than
-    returning 1: those are questions about the machine, not test results, and
-    the caller has a better place to say so.
-    """
-    console = get_console() if console is None else console
-    layout = Layout() if layout is None else layout
-
-    if which == "all":
-        selected: tuple[str, ...] = TEST_NAMES
-    elif which in TEST_NAMES:
-        selected = (which,)
-    else:
-        raise ConfigError(
-            f"unknown VM test {which!r}: expected one of {', '.join(('all', *TEST_NAMES))}"
-        )
-
-    if runner is None:
-        # A harness that only prints what it would boot is not a harness. The
-        # caller's runner is taken as it stands — an explicit dry run is a
-        # choice — but the default actually runs.
-        runner = Runner(dry_run=False, console=console)
-    elif runner.dry_run:
-        console.warn(
-            "this runner is in dry-run mode: no guest will be booted and every test will fail"
-        )
-
-    harness = Harness(layout=layout, runner=runner, console=console)
+def run_tests(which: str, layout: FolderLayout) -> int:
+    selected = TEST_NAMES if which == "all" else (which,)
+    if any(name not in TEST_NAMES for name in selected):
+        raise ConfigError(f"unknown VM test: {which}")
+    harness = Harness(layout)
     harness.prepare()
-    harness.report()
-
     failed = [name for name in selected if not harness.run(name)]
-    harness.summary(selected, failed)
-    return 1 if failed else 0
+    print(f"Failed: {', '.join(failed)}" if failed else f"All {len(selected)} VM scenarios passed")
+    return int(bool(failed))
+
+
+def main(argv: list[str] | None = None) -> int:
+    """
+    Run VM checks against artifacts in the explicit build directory.
+    """
+    parser = argparse.ArgumentParser(description="Test a LiveUSB ISO with QEMU and OVMF")
+    parser.add_argument("--temp-dir", type=Path, required=True)
+    parser.add_argument("--test", choices=("all", *TEST_NAMES), default="all")
+    args = parser.parse_args(argv)
+    try:
+        return run_tests(args.test, FolderLayout(args.temp_dir))
+    except (BuildError, ConfigError, ToolMissing, OSError, subprocess.SubprocessError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

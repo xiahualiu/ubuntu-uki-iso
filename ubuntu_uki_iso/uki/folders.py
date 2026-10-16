@@ -1,4 +1,6 @@
-"""Paths for the standalone UKI build, beside the kernel build outputs."""
+"""
+Paths for the standalone UKI build, beside the kernel build outputs.
+"""
 
 from pathlib import Path
 

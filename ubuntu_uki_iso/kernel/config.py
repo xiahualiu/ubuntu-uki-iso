@@ -7,6 +7,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+#: The Ubuntu kernel *series*. Note this is not the kernel release:
+#: linux-source-7.0.0 carries upstream 7.0.14, and the built release is
+#: whatever that source tree's Makefile says plus CONFIG_LOCALVERSION. The
+#: release is never assumed — it is read back from the source tree.
+KERNEL_SOURCE_PKG = "linux-source-7.0.0"
+
+#: Appended to the kernel release via CONFIG_LOCALVERSION.
+LOCALVERSION = "-ubuntu-uki-iso"
+
 
 class TristateValue(StrEnum):
     """
@@ -1399,3 +1408,33 @@ def render_config_override() -> str:
     Render the fixed overrides in kernel configuration syntax.
     """
     return "".join(entry.render() for entry in config_override())
+
+
+def required_packages() -> tuple[str, ...]:
+    """
+    Apt packages required for compiling and packaging the kernel.
+
+    Returns:
+        Names of the required apt packages.
+    """
+    return (
+        "apt",
+        "dpkg",
+        "tar",
+        "make",
+        "build-essential",
+        "bc",
+        "bison",
+        "flex",
+        "libssl-dev",
+        "libelf-dev",
+        "libdw-dev",
+        "libncurses-dev",
+        "dwarves",
+        "debhelper",
+        "fakeroot",
+        "dpkg-dev",
+        "devscripts",
+        "equivs",
+        "zstd",
+    )

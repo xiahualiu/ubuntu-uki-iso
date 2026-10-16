@@ -1,4 +1,5 @@
-"""Use the existing array, or build a new one.
+"""
+Use the existing array, or build a new one.
 
 The reuse path is the one that runs in normal use, and it is built to leave no
 trace: no ``--create``, no ``--zero-superblock``, no ``--update``, no
@@ -13,16 +14,21 @@ went in.
 
 from __future__ import annotations
 
-from .. import settings
+import subprocess
+import sys
+
 from ..errors import BuildError
-from . import device
+from . import config, device
 from .context import RAID_VERIFY_MOUNT, Context
 from .preflight import Decision, Preflight
 
 
 def run(ctx: Context, preflight: Preflight) -> None:
-    console = ctx.console
-    console.step("2/5 raid")
+    if ctx.dry_run:
+        print("dry run: this step would modify the target; skipping execution")
+        return
+    ctx.require_apply()
+    print("==>", "2/5 raid")
 
     match preflight.decision:
         case Decision.REUSE:
@@ -30,7 +36,7 @@ def run(ctx: Context, preflight: Preflight) -> None:
         case Decision.CREATE:
             _create(ctx)
         case Decision.NONE:
-            console.info("not managing an array (--raid=none)")
+            print("not managing an array (--raid=none)")
         case _:
             raise BuildError(f"internal: unexpected RAID decision {preflight.decision}")
 
@@ -41,14 +47,17 @@ def run(ctx: Context, preflight: Preflight) -> None:
 
 
 def _reuse(ctx: Context, preflight: Preflight) -> None:
-    console, runner = ctx.console, ctx.runner
+    if ctx.dry_run:
+        print("dry run: this step would modify the target; skipping execution")
+        return
+    ctx.require_apply()
 
-    console.info(
-        f"{settings.EXPECTED_MD_LEVEL} array, {settings.EXPECTED_MD_DEVICES} disks, "
-        f"{settings.EXPECTED_MD_CHUNK} chunks"
+    print(
+        f"{config.EXPECTED_MD_LEVEL} array, {len(ctx.data_disks)} disks, "
+        f"{config.EXPECTED_MD_CHUNK} chunks"
     )
-    console.info(f"uuid {settings.EXPECTED_MD_UUID}")
-    console.grey("this path never writes a superblock")
+    print(f"uuid {config.EXPECTED_MD_UUID}")
+    print("this path never writes a superblock")
 
     active = preflight.active_array
     if active and active != ctx.md_device.rsplit("/", 1)[-1]:
@@ -58,73 +67,92 @@ def _reuse(ctx: Context, preflight: Preflight) -> None:
         )
 
     if device.exists(ctx.md_device) and _is_active(ctx):
-        console.grey(f"{ctx.md_device} is already assembled")
+        print(f"{ctx.md_device} is already assembled")
     else:
         # Explicit device list, explicit UUID. --scan would assemble everything
         # the machine can see, which is wider than the job.
-        runner.run(
-            "mdadm",
-            "--assemble",
-            ctx.md_device,
-            f"--uuid={settings.EXPECTED_MD_UUID}",
-            *ctx.data_disks,
+        subprocess.run(
+            [
+                "mdadm",
+                "--assemble",
+                ctx.md_device,
+                f"--uuid={config.EXPECTED_MD_UUID}",
+                *ctx.data_disks,
+            ],
+            check=True,
         )
 
-    device.settle_udev(runner)
-
-    if ctx.dry_run:
-        console.grey(f"would verify {ctx.md_device}: level, member count, chunk size, uuid")
-        console.grey("would mount it read-only to prove the filesystem is readable")
-        return
+    device.settle_udev()
 
     if not _is_active(ctx):
         raise BuildError(f"{ctx.md_device} is not active after assembly")
     _verify_shape(ctx)
 
+    # A mounted, matching array is left mounted and unchanged. Only inspect it
+    # to record the UUID used by the installed system's optional fstab entry.
+    if device.is_mounted(ctx.md_device):
+        ctx.data_uuid = device.uuid_of(ctx.md_device)
+        if not ctx.data_uuid:
+            raise BuildError(f"could not read the filesystem UUID of {ctx.md_device}")
+        print("ok", "existing array is already mounted; left unchanged")
+        return
+
     # Prove the filesystem is readable without touching it.
-    runner.run("mkdir", "-p", str(RAID_VERIFY_MOUNT))
-    runner.run("mount", "-o", "ro,norecovery", ctx.md_device, str(RAID_VERIFY_MOUNT))
+    subprocess.run(["mkdir", "-p", str(RAID_VERIFY_MOUNT)], check=True)
+    subprocess.run(
+        ["mount", "-o", "ro,norecovery", ctx.md_device, str(RAID_VERIFY_MOUNT)], check=True
+    )
     try:
-        listing = runner.probe("ls", str(RAID_VERIFY_MOUNT), check=False)
-        if listing.ok:
+        listing = subprocess.run(
+            ["ls", str(RAID_VERIFY_MOUNT)], check=False, capture_output=True, text=True, timeout=120
+        )
+        if listing.returncode == 0:
             entries = len(
                 [
                     entry
-                    for entry in runner.capture(
-                        "find",
-                        str(RAID_VERIFY_MOUNT),
-                        "-maxdepth",
-                        "1",
-                        "-mindepth",
-                        "1",
+                    for entry in subprocess.run(
+                        ["find", str(RAID_VERIFY_MOUNT), "-maxdepth", "1", "-mindepth", "1"],
                         check=False,
-                    ).splitlines()
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    .stdout.strip()
+                    .splitlines()
                     if entry
                 ]
             )
-            console.ok(f"array is readable ({entries} entries at the top level)")
+            print("ok", f"array is readable ({entries} entries at the top level)")
         else:
-            console.warn("array mounted but its contents could not be listed")
+            print("WARN:", "array mounted but its contents could not be listed", file=sys.stderr)
     finally:
-        runner.run("umount", str(RAID_VERIFY_MOUNT), check=False)
-        runner.run("rmdir", str(RAID_VERIFY_MOUNT), check=False)
+        subprocess.run(["umount", str(RAID_VERIFY_MOUNT)], check=False)
+        subprocess.run(["rmdir", str(RAID_VERIFY_MOUNT)], check=False)
 
     # Remember the filesystem UUID for the target's fstab.
-    ctx.data_uuid = device.uuid_of(runner, ctx.md_device)
-    console.ok("existing array reused, unmodified")
+    ctx.data_uuid = device.uuid_of(ctx.md_device)
+    if not ctx.data_uuid:
+        raise BuildError(f"could not read the filesystem UUID of {ctx.md_device}")
+    print("ok", "existing array reused, unmodified")
 
 
 def _is_active(ctx: Context) -> bool:
-    return device.active_array(ctx.runner) == ctx.md_device.rsplit("/", 1)[-1]
+    return device.active_array() == ctx.md_device.rsplit("/", 1)[-1]
 
 
 def _verify_shape(ctx: Context) -> None:
-    """Confirm the array that came up is the one that was expected.
+    """
+    Confirm the array that came up is the one that was expected.
 
     Rather than trusting that ``--assemble`` did what was asked.
     """
-    runner = ctx.runner
-    detail = runner.capture("mdadm", "--detail", ctx.md_device, check=False)
+    detail = subprocess.run(
+        ["mdadm", "--detail", ctx.md_device],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    ).stdout.strip()
     if not detail:
         raise BuildError(f"mdadm --detail {ctx.md_device} produced nothing")
 
@@ -141,27 +169,27 @@ def _verify_shape(ctx: Context) -> None:
     if not level or not members:
         raise BuildError(f"could not read the shape of {ctx.md_device}")
 
-    if level != settings.EXPECTED_MD_LEVEL:
+    if level != config.EXPECTED_MD_LEVEL:
         raise BuildError(
-            f"{ctx.md_device} came up as {level}, expected {settings.EXPECTED_MD_LEVEL}.\n"
+            f"{ctx.md_device} came up as {level}, expected {config.EXPECTED_MD_LEVEL}.\n"
             "\n"
             "A RAID0 assembled at the wrong level is not a slightly-wrong array, it is\n"
             "a different mapping of the same bytes. Refusing to mount it."
         )
 
-    if str(members) != str(settings.EXPECTED_MD_DEVICES):
+    if str(members) != str(len(ctx.data_disks)):
         raise BuildError(
             f"{ctx.md_device} came up with {members} member slots, expected "
-            f"{settings.EXPECTED_MD_DEVICES}.\n"
+            f"{len(ctx.data_disks)}.\n"
             "\n"
             "A RAID0 that is missing members still assembles and still mounts — it just\n"
             "returns different data at every offset past the first missing chunk."
         )
 
-    if uuid and uuid != settings.EXPECTED_MD_UUID:
-        raise BuildError(f"{ctx.md_device} has uuid {uuid}, expected {settings.EXPECTED_MD_UUID}")
+    if uuid and uuid != config.EXPECTED_MD_UUID:
+        raise BuildError(f"{ctx.md_device} has uuid {uuid}, expected {config.EXPECTED_MD_UUID}")
 
-    ctx.console.ok(f"verified: {level}, {members} members, uuid {uuid}")
+    print("ok", f"verified: {level}, {members} members, uuid {uuid}")
 
 
 # ---------------------------------------------------------------------------
@@ -170,50 +198,57 @@ def _verify_shape(ctx: Context) -> None:
 
 
 def _create(ctx: Context) -> None:
-    console, runner = ctx.console, ctx.runner
+    if ctx.dry_run:
+        print("dry run: this step would modify the target; skipping execution")
+        return
+    ctx.require_apply()
 
-    console.warn(f"creating a NEW array across {len(ctx.data_disks)} disks")
-    console.warn(f"every byte on these disks will be gone: {' '.join(ctx.data_disks)}")
+    print("WARN:", f"creating a NEW array across {len(ctx.data_disks)} disks", file=sys.stderr)
+    print(
+        "WARN:",
+        f"every byte on these disks will be gone: {' '.join(ctx.data_disks)}",
+        file=sys.stderr,
+    )
 
     # preflight.decide already refused if any disk carried a filesystem or a
     # superblock, so reaching here means the disks were verified blank. Re-check
     # anyway: that scan happened before the operator was asked to confirm, and a
     # disk can acquire a signature in between.
     for path in ctx.data_disks:
-        if md := device.examine_md(runner, path):
+        if md := device.examine_md(path):
             raise BuildError(
                 f"{path} has an md superblock now ({md.uuid}). Something changed since\n"
                 "the scan. Refusing to create."
             )
-        if found := device.filesystems(runner, path):
+        if found := device.filesystems(path):
             raise BuildError(
                 f"{path} has a filesystem signature now ({', '.join(found)}).\n"
                 "Something changed since the scan. Refusing to create."
             )
 
-    runner.destructive(
-        f"create a new RAID0 across {len(ctx.data_disks)} disks",
-        "mdadm",
-        "--create",
-        ctx.md_device,
-        "--level=0",
-        f"--raid-devices={len(ctx.data_disks)}",
-        f"--chunk={settings.EXPECTED_MD_CHUNK}",
-        f"--metadata={settings.RAID_METADATA_VERSION}",
-        f"--uuid={settings.EXPECTED_MD_UUID}",
-        "--run",
-        *ctx.data_disks,
+    subprocess.run(
+        [
+            "mdadm",
+            "--create",
+            ctx.md_device,
+            "--level=0",
+            f"--raid-devices={len(ctx.data_disks)}",
+            f"--chunk={config.EXPECTED_MD_CHUNK}",
+            f"--metadata={config.RAID_METADATA_VERSION}",
+            f"--uuid={config.EXPECTED_MD_UUID}",
+            "--run",
+            *ctx.data_disks,
+        ],
+        check=True,
     )
 
-    device.settle_udev(runner)
-
-    if ctx.dry_run:
-        console.grey(f"would format {ctx.md_device} ext4 and record it in the target's fstab")
-        return
+    device.settle_udev()
 
     if not _is_active(ctx):
         raise BuildError(f"{ctx.md_device} did not come up after creation")
 
-    runner.run("mkfs.ext4", "-q", "-L", "ubuntu-uki-iso-data", ctx.md_device)
-    ctx.data_uuid = device.uuid_of(runner, ctx.md_device)
-    console.ok("new array created and formatted")
+    subprocess.run(["mkfs.ext4", "-q", "-L", "ubuntu-uki-iso-data", ctx.md_device], check=True)
+    ctx.data_uuid = device.uuid_of(ctx.md_device)
+    if not ctx.data_uuid:
+        raise BuildError(f"could not read the filesystem UUID of {ctx.md_device}")
+    print("ok", "new array created and formatted")

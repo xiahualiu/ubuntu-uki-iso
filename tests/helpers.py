@@ -1,4 +1,5 @@
-"""Builders for the binary structures the tests parse.
+"""
+Builders for the binary structures the tests parse.
 
 Constructing these by hand, rather than checking in fixtures, means the tests
 document the format they depend on — and a fixture that silently stops matching
@@ -15,7 +16,8 @@ BASIC_DATA_TYPE_GUID = bytes.fromhex("a2a0d0ebe5b9334487c068b6b72699c7")
 
 
 def make_pe(sections: dict[str, bytes], *, optional_size: int = 0xF0) -> bytes:
-    """A minimal but structurally valid PE binary.
+    """
+    A minimal but structurally valid PE binary.
 
     Only the fields the parser reads are meaningful; everything else is zero.
     """
@@ -50,7 +52,9 @@ def make_pe(sections: dict[str, bytes], *, optional_size: int = 0xF0) -> bytes:
 
 
 def make_uki(cmdline: bytes = b"root=UUID=abc ro quiet") -> bytes:
-    """A UKI-shaped PE: kernel, initramfs, and an embedded command line."""
+    """
+    A UKI-shaped PE: kernel, initramfs, and an embedded command line.
+    """
     return make_pe(
         {
             ".linux": b"\x7fELF" + b"kernel" * 64,
@@ -68,7 +72,8 @@ def make_gpt_iso(
     gpt: bool = True,
     unique_guids: list[bytes] | None = None,
 ) -> bytes:
-    """An ISO-shaped file with an MBR signature and/or a GPT.
+    """
+    An ISO-shaped file with an MBR signature and/or a GPT.
 
     ``partitions`` is a list of ``(type_guid_bytes, first_lba, last_lba, name)``,
     and ``unique_guids`` the per-partition GUIDs in the same order — raw bytes,
@@ -105,7 +110,9 @@ def make_gpt_iso(
 
 
 def el_torito_report(platform: str = "UEFI", bootable: str = "y") -> str:
-    """The shape of ``xorriso -report_el_torito plain`` output."""
+    """
+    The shape of ``xorriso -report_el_torito plain`` output.
+    """
     return (
         "El Torito catalog  : 34  1\n"
         "El Torito cat path : /boot.catalog\n"

@@ -1,4 +1,6 @@
-"""Independent build boundaries, without compiling a kernel or requiring root."""
+"""
+Independent build boundaries, without compiling a kernel or requiring root.
+"""
 
 import subprocess
 from pathlib import Path
@@ -9,6 +11,8 @@ import pytest
 from helpers import make_uki
 from ubuntu_uki_iso.errors import BuildError
 from ubuntu_uki_iso.kernel import build as kernel
+from ubuntu_uki_iso.kernel import config as kernel_config
+from ubuntu_uki_iso.settings import Mode
 from ubuntu_uki_iso.uki import build as uki
 
 
@@ -20,7 +24,7 @@ def test_kernel_preflight_failure_precedes_workspace_creation(tmp_path, monkeypa
 
 
 def test_kernel_preflight_does_not_require_iso_tools():
-    packages = kernel.required_packages()
+    packages = kernel_config.required_packages()
     assert "build-essential" in packages
     assert "xorriso" not in packages
     assert "dracut" not in packages
@@ -34,6 +38,8 @@ def test_uki_uses_extracted_modules_and_preserves_previous_output(tmp_path, monk
     output.write_bytes(b"previous")
     monkeypatch.setattr(uki.boot, "cmdline", lambda mode: "root=live:test")
     commands = []
+    package = Mock()
+    monkeypatch.setattr(uki, "create_package", package)
 
     def run(argv, **kwargs):
         assert kwargs == {"check": True}
@@ -53,11 +59,12 @@ def test_uki_uses_extracted_modules_and_preserves_previous_output(tmp_path, monk
 
     monkeypatch.setattr(uki.subprocess, "run", run)
     if valid:
-        uki.build(deb, output, mode="live")
+        uki.build(deb, output, mode=Mode.LIVE)
+        assert package.call_args.args[2:4] == ("7.0-test", Mode.LIVE)
         assert output.with_suffix(".initramfs.img").read_bytes() == b"initramfs"
     else:
         with pytest.raises(BuildError, match="command line differs"):
-            uki.build(deb, output, mode="live")
+            uki.build(deb, output, mode=Mode.LIVE)
         assert output.read_bytes() == b"previous"
     dracut = next(c for c in commands if c[0] == "dracut")
     scratch = Path(next(a.split("=", 1)[1] for a in dracut if a.startswith("--tmpdir=")))
