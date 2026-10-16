@@ -4,6 +4,7 @@ Disk discovery uses the supplied hardware geometry and refuses ambiguous selecti
 
 import json
 import subprocess
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -42,7 +43,7 @@ def hardware() -> list[dict[str, object]]:
 
 
 def mock_inventory(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, object]]) -> None:
-    def run(argv, **kwargs):
+    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         assert argv[0] == "lsblk" and "--bytes" in argv and "--nodeps" in argv
         assert kwargs["check"] is True
         return subprocess.CompletedProcess(argv, 0, json.dumps({"blockdevices": rows}), "")
@@ -50,7 +51,9 @@ def mock_inventory(monkeypatch: pytest.MonkeyPatch, rows: list[dict[str, object]
     monkeypatch.setattr(subprocess, "run", run)
 
 
-def test_discovers_supplied_geometry_without_selecting_partitions_or_arrays(monkeypatch):
+def test_discovers_supplied_geometry_without_selecting_partitions_or_arrays(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     rows = hardware()
     rows += [
         {**rows[0], "name": "/dev/loop0", "type": "loop"},
@@ -66,7 +69,9 @@ def test_discovers_supplied_geometry_without_selecting_partitions_or_arrays(monk
 
 
 @pytest.mark.parametrize("extra_root", [False, True])
-def test_refuses_missing_or_ambiguous_root(monkeypatch, extra_root):
+def test_refuses_missing_or_ambiguous_root(
+    monkeypatch: pytest.MonkeyPatch, extra_root: bool
+) -> None:
     rows = hardware()
     if extra_root:
         rows.append({**rows[0], "name": "/dev/nvme1n1"})
@@ -78,7 +83,7 @@ def test_refuses_missing_or_ambiguous_root(monkeypatch, extra_root):
 
 
 @pytest.mark.parametrize("count", [7, 9])
-def test_requires_exactly_eight_matching_hdds(monkeypatch, count):
+def test_requires_exactly_eight_matching_hdds(monkeypatch: pytest.MonkeyPatch, count: int) -> None:
     rows = hardware()[:8] if count == 7 else hardware()
     if count == 9:
         rows.append({**rows[1], "name": "/dev/sdi"})
@@ -87,7 +92,7 @@ def test_requires_exactly_eight_matching_hdds(monkeypatch, count):
         discovery.select(None, [], manage_data=True, expected_devices=8)
 
 
-def test_explicit_devices_do_not_need_capacity_discovery(monkeypatch):
+def test_explicit_devices_do_not_need_capacity_discovery(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         discovery, "inventory", Mock(side_effect=AssertionError("unexpected discovery"))
     )
@@ -96,12 +101,12 @@ def test_explicit_devices_do_not_need_capacity_discovery(monkeypatch):
     ) == ("/dev/test", ["/dev/a", "/dev/b"])
 
 
-def test_raid_none_needs_only_a_root_candidate(monkeypatch):
+def test_raid_none_needs_only_a_root_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_inventory(monkeypatch, hardware()[:1])
     assert discovery.select(None, [], manage_data=False, expected_devices=8) == ("/dev/nvme0n1", [])
 
 
-def test_mounted_root_is_refused_before_any_formatting(monkeypatch):
+def test_mounted_root_is_refused_before_any_formatting(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(device, "exists", lambda disk: True)
     monkeypatch.setattr(device, "examine_md", lambda disk: None)
     monkeypatch.setattr(device, "is_rotational", lambda disk: False)
@@ -112,7 +117,7 @@ def test_mounted_root_is_refused_before_any_formatting(monkeypatch):
         preflight.check_root_disk("/dev/nvme0n1")
 
 
-def test_existing_mounted_array_is_left_unchanged(monkeypatch):
+def test_existing_mounted_array_is_left_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = Context(
         "/dev/nvme0n1",
         [f"/dev/sd{name}" for name in "abcdefgh"],
@@ -133,7 +138,7 @@ def test_existing_mounted_array_is_left_unchanged(monkeypatch):
     commands.assert_not_called()
 
 
-def test_partition_table_prevents_treating_a_disk_as_blank(monkeypatch):
+def test_partition_table_prevents_treating_a_disk_as_blank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -142,7 +147,7 @@ def test_partition_table_prevents_treating_a_disk_as_blank(monkeypatch):
     assert device.filesystems("/dev/sda") == ("partition-table:gpt",)
 
 
-def test_failed_signature_probe_is_not_treated_as_blank(monkeypatch):
+def test_failed_signature_probe_is_not_treated_as_blank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         subprocess,
         "run",
@@ -152,7 +157,7 @@ def test_failed_signature_probe_is_not_treated_as_blank(monkeypatch):
         device.filesystems("/dev/sda")
 
 
-def test_unreadable_raid_metadata_is_not_treated_as_blank(monkeypatch):
+def test_unreadable_raid_metadata_is_not_treated_as_blank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         subprocess,
         "run",

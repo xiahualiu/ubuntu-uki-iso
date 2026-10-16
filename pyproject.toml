@@ -42,6 +42,7 @@ dev = [
 ]
 
 [project.scripts]
+ubuntu-uki-nvidia = "ubuntu_uki_iso.nvidia.build:main"
 # Standalone kernel, UKI and rootfs binaries call main() in their owning build modules.
 ubuntu-uki-kernel = "ubuntu_uki_iso.kernel.build:main"
 ubuntu-uki-build = "ubuntu_uki_iso.uki.build:main"

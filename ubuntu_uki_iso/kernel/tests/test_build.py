@@ -4,6 +4,7 @@ Kernel input preparation without downloading or compiling a kernel.
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,7 +12,9 @@ from ubuntu_uki_iso.kernel import build
 from ubuntu_uki_iso.kernel.folders import FolderLayout
 
 
-def test_default_config_replaces_cached_ubuntu_and_custom_configs(tmp_path, monkeypatch):
+def test_default_config_replaces_cached_ubuntu_and_custom_configs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     layout = FolderLayout(tmp_path)
     layout.require_dirs()
     source = tmp_path / "source"
@@ -19,7 +22,7 @@ def test_default_config_replaces_cached_ubuntu_and_custom_configs(tmp_path, monk
     (source / ".config").write_text("custom config")
     commands = []
 
-    def run(argv, **kwargs):
+    def run(argv: list[Any], **kwargs: Any) -> None:
         commands.append(argv)
         assert kwargs == {"cwd": source, "check": True}
         if argv == ["make", "ARCH=x86", "x86_64_defconfig"]:
@@ -44,14 +47,16 @@ def test_default_config_replaces_cached_ubuntu_and_custom_configs(tmp_path, monk
 
 
 @pytest.mark.parametrize("nested", [False, True])
-def test_source_tarball_can_be_direct_or_nested(tmp_path, monkeypatch, nested):
+def test_source_tarball_can_be_direct_or_nested(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested: bool
+) -> None:
     layout = FolderLayout(tmp_path)
     name = "usr/src/" + ("linux-source-7.0.0/" if nested else "")
     name += "linux-source-7.0.0.tar.bz2"
     deb = tmp_path / "source.deb"
     monkeypatch.setattr(build, "download_package", lambda *args: deb)
 
-    def extract(argv, **kwargs):
+    def extract(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         assert argv == ["dpkg-deb", "--extract", str(deb), str(layout.download_dir / "package")]
         assert kwargs == {"check": True}
         tarball = layout.download_dir / "package" / name
@@ -74,7 +79,9 @@ def test_source_tarball_can_be_direct_or_nested(tmp_path, monkeypatch, nested):
 
 
 @pytest.mark.parametrize("missing", [None, "headers"])
-def test_collects_bindeb_packages_and_excludes_debug_symbols(tmp_path, monkeypatch, missing):
+def test_collects_bindeb_packages_and_excludes_debug_symbols(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: bool
+) -> None:
     source = tmp_path / "source"
     source.mkdir()
     output = tmp_path / "out"

@@ -2,6 +2,7 @@
 Standalone UKI CLI input selection and EFI output paths.
 """
 
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -12,7 +13,7 @@ from ubuntu_uki_iso.uki import build as uki_build
 from ubuntu_uki_iso.uki.folders import FolderLayout
 
 
-def test_selects_recorded_kernel_and_rejects_ambiguity(tmp_path):
+def test_selects_recorded_kernel_and_rejects_ambiguity(tmp_path: Path) -> None:
     layout = FolderLayout(tmp_path)
     layout.kernel.mkdir()
     current = layout.kernel / "linux-image-7.0-test_1_amd64.deb"
@@ -25,7 +26,9 @@ def test_selects_recorded_kernel_and_rejects_ambiguity(tmp_path):
     assert layout.kernel_image_deb() == current
 
 
-def test_preflight_failure_does_not_create_output(tmp_path, monkeypatch):
+def test_preflight_failure_does_not_create_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(
         uki_build,
         "preflight",
@@ -40,7 +43,9 @@ def test_preflight_failure_does_not_create_output(tmp_path, monkeypatch):
     ("extra", "filename", "mode"),
     [([], "uki.efi", Mode.INSTALLED), (["--mode", Mode.LIVE], "BOOTX64.EFI", Mode.LIVE)],
 )
-def test_cli_builds_efi_from_kernel_output(tmp_path, monkeypatch, extra, filename, mode):
+def test_cli_builds_efi_from_kernel_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, extra: list[str], filename: str, mode: Mode
+) -> None:
     layout = FolderLayout(tmp_path)
     layout.kernel.mkdir()
     image = layout.kernel / "linux-image-7.0-test_1_amd64.deb"
@@ -54,7 +59,7 @@ def test_cli_builds_efi_from_kernel_output(tmp_path, monkeypatch, extra, filenam
     assert not list(layout.uki.glob("*.deb"))
 
 
-def test_cli_explicit_input(tmp_path, monkeypatch):
+def test_cli_explicit_input(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     image = tmp_path / "custom.deb"
     output = tmp_path / "uki/uki.efi"
     monkeypatch.setattr(uki_build, "preflight", Mock())
@@ -75,7 +80,9 @@ def test_cli_explicit_input(tmp_path, monkeypatch):
     assert build.call_args.kwargs == {"mode": Mode.INSTALLED}
 
 
-def test_preflight_reports_missing_packages(tmp_path, monkeypatch):
+def test_preflight_reports_missing_packages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import subprocess
 
     monkeypatch.setattr(
@@ -88,7 +95,9 @@ def test_preflight_reports_missing_packages(tmp_path, monkeypatch):
     assert not (tmp_path / "new").exists()
 
 
-def test_main_reports_failed_command(tmp_path, monkeypatch, capsys):
+def test_main_reports_failed_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     import subprocess
 
     monkeypatch.setattr(uki_build, "preflight", Mock())
@@ -111,12 +120,12 @@ def test_main_reports_failed_command(tmp_path, monkeypatch, capsys):
     assert "command failed (1): dracut --force" in capsys.readouterr().err
 
 
-def test_cli_rejects_cmdline_override(tmp_path):
+def test_cli_rejects_cmdline_override(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         uki_build.main(["--temp-dir", str(tmp_path), "--cmdline", "root=test"])
 
 
-def test_command_line_uses_config_definition(monkeypatch):
+def test_command_line_uses_config_definition(monkeypatch: pytest.MonkeyPatch) -> None:
     from ubuntu_uki_iso.uki import config
 
     monkeypatch.setattr(
@@ -127,12 +136,12 @@ def test_command_line_uses_config_definition(monkeypatch):
     assert config.cmdline(Mode.INSTALLED) == "root=UUID=test ro debug"
 
 
-def test_cli_rejects_output_override(tmp_path):
+def test_cli_rejects_output_override(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         uki_build.main(["--temp-dir", str(tmp_path), "--output", str(tmp_path / "custom.efi")])
 
 
-def test_preflight_requires_storage_userspace():
+def test_preflight_requires_storage_userspace() -> None:
     from ubuntu_uki_iso.uki import config
 
     assert {"mdadm", "dmsetup"} <= set(config.required_packages())

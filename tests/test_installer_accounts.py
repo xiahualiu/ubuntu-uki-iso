@@ -3,6 +3,7 @@ Account credentials never reach command arguments or diagnostic output.
 """
 
 import subprocess
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -14,11 +15,13 @@ from ubuntu_uki_iso.installer.preflight import RaidMode
 
 
 @pytest.fixture(autouse=True)
-def no_deployment_key(monkeypatch):
+def no_deployment_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(accounts.config, "SSH_PUBLIC_KEY", "")
 
 
-def test_password_is_hidden_confirmed_and_sent_only_via_stdin(monkeypatch, tmp_path):
+def test_password_is_hidden_confirmed_and_sent_only_via_stdin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     ctx = Context(
         "/dev/test",
         [],
@@ -48,7 +51,9 @@ def test_password_is_hidden_confirmed_and_sent_only_via_stdin(monkeypatch, tmp_p
     "username,passwords",
     [("root", []), ("bad:name", []), ("alice", ["one", "two"]), ("alice", ["", ""])],
 )
-def test_invalid_credentials_refuse_before_creation(monkeypatch, tmp_path, username, passwords):
+def test_invalid_credentials_refuse_before_creation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, username: str, passwords: list[str]
+) -> None:
     ctx = Context("/dev/test", [], RaidMode.NONE, payload=tmp_path / "rootfs")
     command = Mock(
         return_value=subprocess.CompletedProcess([], 0, stdout="root:x:0:0::/root:/bin/bash\n")
@@ -60,7 +65,7 @@ def test_invalid_credentials_refuse_before_creation(monkeypatch, tmp_path, usern
     assert all(call.args[0][0] == "unsquashfs" for call in command.call_args_list)
 
 
-def test_private_password_file_required(monkeypatch, tmp_path):
+def test_private_password_file_required(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     ctx = Context("/dev/test", [], RaidMode.NONE, payload=tmp_path / "rootfs")
     monkeypatch.setattr(
         subprocess, "run", Mock(return_value=subprocess.CompletedProcess([], 0, stdout=""))
@@ -74,7 +79,9 @@ def test_private_password_file_required(monkeypatch, tmp_path):
     assert accounts.collect(ctx, "alice", path).password == "secret"
 
 
-def test_creation_is_gated_and_failure_does_not_disclose_password(monkeypatch):
+def test_creation_is_gated_and_failure_does_not_disclose_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     ctx = Context("/dev/test", [], RaidMode.NONE)
     credentials = accounts.Credentials("alice", "secret")
     command = Mock(side_effect=subprocess.CalledProcessError(1, ["chpasswd"], stderr="secret"))
@@ -90,7 +97,9 @@ def test_creation_is_gated_and_failure_does_not_disclose_password(monkeypatch):
     assert credentials.password == ""
 
 
-def test_ssh_key_is_added_once_with_private_permissions(monkeypatch, tmp_path):
+def test_ssh_key_is_added_once_with_private_permissions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from ubuntu_uki_iso.installer import context
 
     monkeypatch.setattr(context, "TARGET_MOUNT", tmp_path)
@@ -117,7 +126,9 @@ def test_ssh_key_is_added_once_with_private_permissions(monkeypatch, tmp_path):
     ]
 
 
-def test_invalid_configured_public_key_refuses_before_disk_changes(monkeypatch):
+def test_invalid_configured_public_key_refuses_before_disk_changes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(accounts.config, "SSH_PUBLIC_KEY", "invalid key")
     command = Mock(return_value=subprocess.CompletedProcess([], 1))
     monkeypatch.setattr(subprocess, "run", command)
@@ -127,7 +138,9 @@ def test_invalid_configured_public_key_refuses_before_disk_changes(monkeypatch):
     assert command.call_args.args[0] == ["ssh-keygen", "-l", "-f", "-"]
 
 
-def test_ssh_key_preloading_requires_confirmation(monkeypatch, tmp_path):
+def test_ssh_key_preloading_requires_confirmation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from ubuntu_uki_iso.installer import context
 
     monkeypatch.setattr(context, "TARGET_MOUNT", tmp_path)

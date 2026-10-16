@@ -4,6 +4,7 @@ Direct subprocess execution keeps installer planning and confirmation separate f
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import Mock, mock_open
 
@@ -18,7 +19,7 @@ from ubuntu_uki_iso.installer.preflight import Decision, Preflight, RaidMode
 @pytest.mark.parametrize("dry_run", [True, False])
 @pytest.mark.parametrize("step", [partition.run, target.run, uki.run, raid._create])
 def test_mutating_steps_require_apply_and_confirmation(
-    monkeypatch: pytest.MonkeyPatch, dry_run: bool, step
+    monkeypatch: pytest.MonkeyPatch, dry_run: bool, step: Callable[[Context], None]
 ) -> None:
     commands = Mock(side_effect=AssertionError("unconfirmed step executed a command"))
     monkeypatch.setattr(subprocess, "run", commands)

@@ -245,7 +245,12 @@ def squash(source: Path, destination: Path, jobs: int) -> Path:
     return destination
 
 
-def build(boot_deb: Path, temp_dir: Path, mode: Mode = Mode.INSTALLED, jobs: int = 1) -> Path:
+def build(
+    boot_deb: Path,
+    temp_dir: Path,
+    mode: Mode = Mode.INSTALLED,
+    jobs: int = 1,
+) -> Path:
     """
     Build the installed shared base or a live layer against that base.
 

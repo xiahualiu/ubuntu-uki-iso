@@ -4,6 +4,7 @@ VM hardware, firmware persistence and trustworthy guest-result handling.
 
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -13,7 +14,7 @@ from ubuntu_uki_iso.qemu import harness
 from ubuntu_uki_iso.qemu.folders import FolderLayout
 
 
-def machine(tmp_path):
+def machine(tmp_path: Path) -> harness.Harness:
     vm = harness.Harness(FolderLayout(tmp_path))
     vm.layout.vm.mkdir()
     vm.layout.vm_logs.mkdir()
@@ -24,7 +25,7 @@ def machine(tmp_path):
     return vm
 
 
-def test_hardware_matches_workstation_and_usb_boot(tmp_path):
+def test_hardware_matches_workstation_and_usb_boot(tmp_path: Path) -> None:
     vm = machine(tmp_path)
     args = vm._qemu_argv("live")
     devices = [args[i + 1] for i, value in enumerate(args) if value == "-device"]
@@ -37,13 +38,16 @@ def test_hardware_matches_workstation_and_usb_boot(tmp_path):
     assert any(value.startswith("usb-storage,") and "bootindex=1" in value for value in devices)
     assert "-bios" not in args and "-cdrom" not in args and "-boot" not in args
     assert "e1000e,netdev=net0" in devices
+    assert "usb-kbd,bus=xhci.0" in devices
     assert sum("if=pflash" in value for value in args) == 2
     reboot = vm._qemu_argv("live", installed=True, data=False)
     assert not any("usb-storage" in value or "ide-hd" in value for value in reboot)
     assert any("nvme," in value and "bootindex=1" in value for value in reboot)
 
 
-def test_sparse_disks_have_decimal_hardware_capacities(tmp_path, monkeypatch):
+def test_sparse_disks_have_decimal_hardware_capacities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     vm = machine(tmp_path)
     run = Mock()
     monkeypatch.setattr(harness.subprocess, "run", run)
@@ -56,7 +60,9 @@ def test_sparse_disks_have_decimal_hardware_capacities(tmp_path, monkeypatch):
     assert all(Path(call[-2]).parent == vm.layout.vm for call in calls)
 
 
-def test_ovmf_requires_matching_writable_vars_template(tmp_path, monkeypatch):
+def test_ovmf_requires_matching_writable_vars_template(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     vm = machine(tmp_path)
     vm.layout.iso.touch()
     monkeypatch.setattr(harness.shutil, "which", lambda tool: tool)
@@ -76,11 +82,11 @@ def test_ovmf_requires_matching_writable_vars_template(tmp_path, monkeypatch):
     ],
 )
 def test_guest_success_requires_real_marker_and_clean_exit(
-    tmp_path, monkeypatch, text, returncode, expected
-):
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str, returncode: int, expected: bool
+) -> None:
     vm = machine(tmp_path)
 
-    def execute(argv, **kwargs):
+    def execute(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         kwargs["stdout"].write(text)
         return subprocess.CompletedProcess(argv, returncode)
 
@@ -94,12 +100,14 @@ def test_guest_success_requires_real_marker_and_clean_exit(
 
 
 @pytest.mark.parametrize("name", harness.TEST_NAMES)
-def test_guest_scripts_are_valid_shell_and_install_reboots_without_usb(tmp_path, monkeypatch, name):
+def test_guest_scripts_are_valid_shell_and_install_reboots_without_usb(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
     vm = machine(tmp_path)
     monkeypatch.setattr(vm, "_reset_disks", lambda: None)
     boots = []
 
-    def execute(name, command, **kwargs):
+    def execute(name: str, command: str, **kwargs: Any) -> bool:
         subprocess.run(["bash", "-n"], input=command, text=True, check=True)
         boots.append((command, kwargs))
         return True
@@ -114,7 +122,7 @@ def test_guest_scripts_are_valid_shell_and_install_reboots_without_usb(tmp_path,
         assert "--root-disk" not in boots[0][0] and "--data-disks" not in boots[0][0]
 
 
-def test_expect_uses_bounded_lines_and_hides_assertions_from_terminal_echo(tmp_path):
+def test_expect_uses_bounded_lines_and_hides_assertions_from_terminal_echo(tmp_path: Path) -> None:
     vm = machine(tmp_path)
     command = "echo secret-check\n" * 1000
     script = vm._expect_script("live", command)
@@ -127,8 +135,8 @@ def test_expect_uses_bounded_lines_and_hides_assertions_from_terminal_echo(tmp_p
 
 @pytest.mark.parametrize(("command", "status"), [('printf "hello\\n"', 0), ("false", 1)])
 def test_serial_script_round_trips_through_tcl_and_reports_shell_failures(
-    tmp_path, command, status
-):
+    tmp_path: Path, command: str, status: int
+) -> None:
     import base64
     import shutil
 

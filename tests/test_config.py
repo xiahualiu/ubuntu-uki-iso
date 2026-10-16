@@ -4,6 +4,8 @@ Configuration loading and the guard checks.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ubuntu_uki_iso import settings
@@ -38,7 +40,7 @@ def test_the_installed_cmdline_names_the_gpt_partition_label() -> None:
     assert "@@" not in rendered
 
 
-def test_the_installed_cmdline_derives_only_from_settings(monkeypatch) -> None:
+def test_the_installed_cmdline_derives_only_from_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "ROOT_LABEL", "custom-root")
     assert "root=PARTLABEL=custom-root" in boot.cmdline(Mode.INSTALLED)
 
@@ -82,7 +84,7 @@ def test_live_and_target_dracut_policies_have_distinct_boot_requirements() -> No
     assert boot.dracut_conf(Mode.INSTALLED) == server
 
 
-def test_dracut_rendering_is_valid_shell_and_replaces_host_lists(tmp_path) -> None:
+def test_dracut_rendering_is_valid_shell_and_replaces_host_lists(tmp_path: Path) -> None:
     import subprocess
 
     config = boot.dracut_conf(Mode.LIVE)
@@ -109,8 +111,18 @@ def test_python_config_rejects_malformed_names_and_command_lines() -> None:
 
 
 @pytest.mark.parametrize("modules,drivers", [((), ("nvme",)), (("base",), ())])
-def test_dracut_rejects_empty_lists(modules, drivers):
+def test_dracut_rejects_empty_lists(modules: tuple[str, ...], drivers: tuple[str, ...]) -> None:
     from ubuntu_uki_iso.errors import ConfigError
 
     with pytest.raises(ConfigError, match="must not be empty"):
         boot.DracutConfig(modules=modules, drivers=drivers)
+
+
+def test_live_console_and_keyboard_support_early_boot_diagnostics() -> None:
+    args = boot.cmdline(Mode.LIVE).split()
+    assert [arg for arg in args if arg.startswith("console=")] == [
+        "console=ttyS0,115200n8",
+        "console=tty0",
+    ]
+    assert {"rd.shell", "rd.debug", "systemd.show_status=1"} <= set(args)
+    assert {"usbhid", "hid_generic"} <= set(boot.dracut_conf(Mode.LIVE).drivers)

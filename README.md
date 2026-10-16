@@ -24,6 +24,7 @@ source .venv/bin/activate
 
 | Binary | Entry point | Result |
 |---|---|---|
+| `ubuntu-uki-nvidia` | `nvidia.build:main` | Offline NVIDIA open module deb for custom headers |
 | `ubuntu-uki-kernel` | `kernel.build:main` | Kernel image and headers debs |
 | `ubuntu-uki-build` | `uki.build:main` | UKI EFI, initramfs and boot deb |
 | `ubuntu-uki-rootfs` | `rootfs.build:main` | Rootfs and SquashFS images |
@@ -103,7 +104,7 @@ Both profiles include `linux-firmware-nvidia-graphics` for the declared NVIDIA G
 
 Both rootfs profiles use Netplan with the NetworkManager renderer and automatic wired connections. NetworkManager sends DNS configuration to systemd-resolved; networkd and its socket/wait-online units are masked. The Netplan configuration is written to `/etc/netplan/01-network-manager-all.yaml`.
 
-Both rootfs profiles get Ubuntu OS metadata from `base-files` and matching runtime modules installed from their boot packages. Kernel maintainer scripts are not run. The installer runs as `ubuntu-uki-install` or `python3 -m ubuntu_uki_iso.installer.cli` and uses direct subprocess calls, with read-only dry-run planning and explicit confirmation before writes. The live rootfs carries the installer in `/opt/ubuntu-uki-installer`, created using `python3-venv` inside the target rootfs. Its runtime-only wheel is built on the host and installed offline; `/usr/local/bin/ubuntu-uki-install` links to the venv console entry point. Both modes use one `BASE_PACKAGES` list in `rootfs/config.py`, including NVIDIA firmware, Docker, SSH, and the same recovery tools. Live adds only `python3-venv` and the installer venv; automatic Docker, SSH, and RAID-monitor startup is disabled there. Installed mode enables those server services. Neither rootfs contains build tools for generating a UKI. Machine IDs and SSH keys are cleared; installed systems generate fresh SSH host keys on first boot.
+Both rootfs profiles get Ubuntu OS metadata from `base-files` and matching runtime modules installed from their boot packages. Kernel maintainer scripts are not run. The installer runs as `ubuntu-uki-install` or `python3 -m ubuntu_uki_iso.installer.cli` and uses direct subprocess calls, with read-only dry-run planning and explicit confirmation before writes. The live rootfs carries the installer in `/opt/ubuntu-uki-installer`, created using `python3-venv` inside the target rootfs. Its runtime-only wheel is built on the host and installed offline; `/usr/local/bin/ubuntu-uki-install` links to the venv console entry point. Both modes use one `BASE_PACKAGES` list in `rootfs/config.py`, including NVIDIA firmware, Docker, SSH, and the same recovery tools. Live adds only `python3-venv` and the installer venv; automatic Docker, SSH, and RAID-monitor startup is disabled there. Installed mode enables those server services. Kernel headers remain build artifacts for compiling external drivers offline. The rootfs does not include custom headers, DKMS or compiler packages. The `nvidia` submodule builds precompiled NVIDIA open kernel modules as a kernel-specific deb. Installing that deb and matching userspace/firmware packages during image creation is a separate integration step; NVIDIA packages are not added to rootfs automatically. UKI generation tools remain outside the rootfs. Machine IDs and SSH keys are cleared; installed systems generate fresh SSH host keys on first boot.
 
 Dracut uses `hostonly=no` and explicit driver/module lists. UKIs embed build-host OS metadata, their kernel release and mode-specific command line. Configure packages/services in `rootfs/config.py`, kernel overrides in `kernel/config.py`, and boot flags and dracut policy in `uki/config.py`. `live_command_line()` selects the ISO by volume label; `installed_command_line()` selects `settings.ROOT_LABEL` using GPT PARTLABEL.
 
@@ -140,7 +141,29 @@ The FAT image is also appended as a GPT EFI System Partition for USB firmware. A
 
 `SOURCE_DATE_EPOCH` fixes SquashFS timestamps and the ISO modification timestamp. Archive package versions and other build metadata can still vary; byte-for-byte reproducibility is not guaranteed.
 
+## Build NVIDIA kernel modules offline
+
+The kernel build emits a matching `linux-headers-*.deb`. Supply that package and a local release source tree from [NVIDIA/open-gpu-kernel-modules](https://github.com/NVIDIA/open-gpu-kernel-modules) to the independent builder:
+
+```bash
+ubuntu-uki-nvidia --temp-dir out \
+  --driver-version 595.80 \
+  --headers-deb out/kernel/linux-headers-7.0.14-xiahualab-iso_7.0.14-1_amd64.deb \
+  --source-dir /path/to/open-gpu-kernel-modules-595.80 \
+  --jobs 16
+```
+
+`--driver-version` selects the exact release expected from the local source tree; mismatches fail before compilation. Omit it to use the version recorded in `version.mk`. Different releases need their matching local source tree, userspace driver and GSP firmware; choosing a version does not download it.
+
+Run `python3 -m ubuntu_uki_iso.nvidia.build` as an alternative to the installed entry point. Build-host dependencies are `build-essential libelf-dev kmod dpkg-dev`; use a GCC toolchain matching the custom kernel. The builder performs no downloads and needs no root privileges. It extracts headers and copies sources into scratch space, explicitly selects the target kernel rather than the running host kernel, and verifies every module's kernel release, driver version and name before publishing.
+
+The output is `out/nvidia/nvidia-modules-<kernel-release>_<driver-version>-1_amd64.deb`. It contains `nvidia`, `nvidia-modeset`, `nvidia-drm` and `nvidia-uvm` under `/usr/lib/modules/<kernel-release>/updates/nvidia`, licensing and build metadata, and install/remove hooks for `depmod`. It depends on the corresponding live or installed boot deb. It contains no headers, compiler, DKMS, userspace driver or GSP firmware. Modules are unsigned, consistent with the current Secure Boot-disabled boot chain. No modules are loaded on the build host.
+
+NVIDIA requires userspace drivers and GSP firmware from the same NVIDIA release as the modules; [upstream's build instructions](https://github.com/NVIDIA/open-gpu-kernel-modules#how-to-build) describe this requirement. Existing `linux-firmware-nvidia-graphics` alone does not establish that match. The new deb is not yet consumed automatically by the rootfs or ISO builders. Actual GPU operation must be checked on the NVIDIA server; QEMU without GPU passthrough cannot validate it.
+
 ## Boot and install
+
+The live initramfs includes `usbhid` and `hid_generic` so USB keyboards work before the root filesystem mounts. Live boot keeps serial output at 115200 baud and selects the physical monitor (`console=tty0` last) as the primary console. `rd.debug`, `rd.shell` and `systemd.show_status=1` expose early boot progress and permit a dracut shell when boot fails. These diagnostics do not enable Nouveau or an NVIDIA GPU driver.
 
 Write `out/ubuntu_uki_iso.iso` as a raw image to the entire USB device using an image writer. Boot its UEFI entry. The live system opens a root console and mounts the live rootfs with a temporary writable overlay. The generated EFIs are unsigned; use firmware with Secure Boot disabled until you provide signed images. BIOS boot is not supported.
 
@@ -195,3 +218,5 @@ All build and VM commands require an explicit `--temp-dir`; no workspace discove
 The shared-base images were rebuilt from scratch with mmdebstrap under `out/server-liveusb-shared`: installed is 318.3 MiB, live is 324.2 MiB, and the ISO is 879.5 MiB. All shared base packages have matching versions in both images. All five OVMF/TCG scenarios passed, including installation and installed NVMe boots with and without the data array. The live check also verifies that Docker and SSH are installed but inactive. Content checks, guest logs, and the ISO checksum are recorded in `out/server-liveusb-shared/validation.json` and `SHA256SUMS`. Earlier images retain their original package profiles and sizes.
 
 The layered ISO in `out/server-liveusb-layered` is 561.3 MiB, down from 879.5 MiB. It reuses the tested 318.3 MiB base and adds a 6.05 MiB live layer with no duplicated kernel modules or firmware. All five OVMF/TCG scenarios passed, including installed boots with and without data disks and checks that installed systems have neither the installer venv nor live autologin. See `out/server-liveusb-layered/validation.json` and `SHA256SUMS`. The workspace-root `ubuntu_uki_iso.iso` is a verified copy of this image.
+
+The NVIDIA module builder was validated with upstream 615.78.08 against the actual `linux-headers-7.0.14-xiahualab-iso` deb. All four modules compiled and passed version/vermagic checks. `depmod` against the kernel Module.symvers reported no symbol errors, and a dry-run `modprobe` resolved the dependency chain alongside the existing boot deb. The runtime deb and report are under `out/nvidia-validation`; no host drivers were installed or loaded, and no GPU runtime test was performed.

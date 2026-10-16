@@ -2,7 +2,9 @@
 Check the installer validates the GPT label used by the installed UKI.
 """
 
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -13,7 +15,7 @@ from ubuntu_uki_iso.installer import partition
 
 
 @pytest.mark.parametrize("label", [settings.ROOT_LABEL, "wrong-root"])
-def test_root_partition_label_is_verified(monkeypatch, label):
+def test_root_partition_label_is_verified(monkeypatch: pytest.MonkeyPatch, label: str) -> None:
     root = SimpleNamespace(name=label)
     table = Mock()
     table.by_number.return_value = root
@@ -26,7 +28,9 @@ def test_root_partition_label_is_verified(monkeypatch, label):
             partition._verify_root_partition(ctx)
 
 
-def test_real_sgdisk_writes_the_root_label_to_a_disk_image(tmp_path, monkeypatch):
+def test_real_sgdisk_writes_the_root_label_to_a_disk_image(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     import shutil
     import subprocess
 
@@ -40,7 +44,7 @@ def test_real_sgdisk_writes_the_root_label_to_a_disk_image(tmp_path, monkeypatch
         stream.truncate(128 * 1024**2)
     execute = subprocess.run
 
-    def command(argv, **kwargs):
+    def command(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         if argv[0] == "sgdisk":
             return execute(argv, **kwargs)
         return subprocess.CompletedProcess(argv, 0)

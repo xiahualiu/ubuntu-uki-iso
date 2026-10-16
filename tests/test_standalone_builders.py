@@ -4,6 +4,7 @@ Independent build boundaries, without compiling a kernel or requiring root.
 
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -16,14 +17,16 @@ from ubuntu_uki_iso.settings import Mode
 from ubuntu_uki_iso.uki import build as uki
 
 
-def test_kernel_preflight_failure_precedes_workspace_creation(tmp_path, monkeypatch):
+def test_kernel_preflight_failure_precedes_workspace_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(kernel, "preflight", Mock(side_effect=BuildError("missing packages")))
     workspace = tmp_path / "new"
     assert kernel.main(["--temp-dir", str(workspace)]) == 1
     assert not workspace.exists()
 
 
-def test_kernel_preflight_does_not_require_iso_tools():
+def test_kernel_preflight_does_not_require_iso_tools() -> None:
     packages = kernel_config.required_packages()
     assert "build-essential" in packages
     assert "xorriso" not in packages
@@ -31,7 +34,9 @@ def test_kernel_preflight_does_not_require_iso_tools():
 
 
 @pytest.mark.parametrize("valid", [True, False])
-def test_uki_uses_extracted_modules_and_preserves_previous_output(tmp_path, monkeypatch, valid):
+def test_uki_uses_extracted_modules_and_preserves_previous_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, valid: bool
+) -> None:
     deb = tmp_path / "kernel.deb"
     deb.touch()
     output = tmp_path / "boot.efi"
@@ -41,7 +46,7 @@ def test_uki_uses_extracted_modules_and_preserves_previous_output(tmp_path, monk
     package = Mock()
     monkeypatch.setattr(uki, "create_package", package)
 
-    def run(argv, **kwargs):
+    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         assert kwargs == {"check": True}
         args = [str(a) for a in argv]
         commands.append(args)

@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -19,7 +20,7 @@ from ubuntu_uki_iso.settings import Mode
 from ubuntu_uki_iso.uki.config import cmdline
 
 
-def bootstrap_tree(root):
+def bootstrap_tree(root: Path) -> None:
     (root / "usr/lib").mkdir(parents=True)
     (root / "usr/lib/os-release").write_text("ID=ubuntu\n")
     (root / "lib").symlink_to("usr/lib")
@@ -31,12 +32,14 @@ def bootstrap_tree(root):
 
 
 @pytest.mark.parametrize("mode", [Mode.LIVE, Mode.INSTALLED])
-def test_build_installs_boot_package_and_customizes(tmp_path, monkeypatch, mode):
+def test_build_installs_boot_package_and_customizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: Mode
+) -> None:
     deb = tmp_path / "image.deb"
     deb.touch()
     commands = []
 
-    def run(argv, **kwargs):
+    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         args = [str(arg) for arg in argv]
         commands.append(args)
         assert kwargs["check"] is True
@@ -164,7 +167,7 @@ def test_build_installs_boot_package_and_customizes(tmp_path, monkeypatch, mode)
 
 
 @pytest.mark.parametrize("mode", [Mode.LIVE, Mode.INSTALLED])
-def test_profiles_do_not_install_boot_build_tools(mode):
+def test_profiles_do_not_install_boot_build_tools(mode: Mode) -> None:
     packages = set(config.package_list(mode))
     assert not packages & {
         "dracut",
@@ -178,7 +181,9 @@ def test_profiles_do_not_install_boot_build_tools(mode):
 
 
 @pytest.mark.skipif(shutil.which("mksquashfs") is None, reason="squashfs-tools required")
-def test_real_squashfs_preserves_metadata_and_excludes_transient_contents(tmp_path, monkeypatch):
+def test_real_squashfs_preserves_metadata_and_excludes_transient_contents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "rootfs"
     source.mkdir()
     for directory in ("proc", "sys", "dev", "run", "tmp", "var/tmp", "boot/efi"):
@@ -205,7 +210,9 @@ def test_real_squashfs_preserves_metadata_and_excludes_transient_contents(tmp_pa
         assert not list((extracted / directory).iterdir())
 
 
-def test_compression_failure_preserves_previous_output(tmp_path, monkeypatch):
+def test_compression_failure_preserves_previous_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     source = tmp_path / "rootfs"
     source.mkdir()
     output = tmp_path / "image.squashfs"
@@ -219,34 +226,59 @@ def test_compression_failure_preserves_previous_output(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("squashfs-*"))
 
 
-def test_cli_requires_boot_package(tmp_path):
+def test_cli_requires_boot_package(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as exc:
         build.main(["--temp-dir", str(tmp_path)])
     assert exc.value.code == 2
 
 
-def test_preflight_failure_does_not_create_directories(tmp_path, monkeypatch):
+def test_preflight_failure_does_not_create_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(build, "preflight", Mock(side_effect=BuildError("missing mmdebstrap")))
     directory = tmp_path / "new"
     assert build.main(["--temp-dir", str(directory), "--boot-deb", "boot.deb"]) == 1
     assert not directory.exists()
 
 
-def test_cli_explicit_boot_package(tmp_path, monkeypatch):
+def test_cli_explicit_boot_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     deb = tmp_path / "custom.deb"
     monkeypatch.setattr(build, "preflight", Mock())
     compile_image = Mock(return_value=tmp_path / "image.squashfs")
     monkeypatch.setattr(build, "build", compile_image)
-    assert build.main(["--temp-dir", str(tmp_path), "--boot-deb", str(deb), "--jobs", "2"]) == 0
+    assert (
+        build.main(
+            [
+                "--temp-dir",
+                str(tmp_path),
+                "--boot-deb",
+                str(deb),
+                "--jobs",
+                "2",
+            ]
+        )
+        == 0
+    )
     compile_image.assert_called_once_with(deb, tmp_path, Mode.INSTALLED, 2)
 
 
-def test_cli_rejects_one_package_for_both_modes(tmp_path):
+def test_cli_rejects_one_package_for_both_modes(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
-        build.main(["--temp-dir", str(tmp_path), "--boot-deb", "boot.deb", "--mode", "all"])
+        build.main(
+            [
+                "--temp-dir",
+                str(tmp_path),
+                "--boot-deb",
+                "boot.deb",
+                "--mode",
+                "all",
+            ]
+        )
 
 
-def test_live_layer_requires_installed_base_before_bootstrap(tmp_path, monkeypatch):
+def test_live_layer_requires_installed_base_before_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     deb = tmp_path / "boot-live.deb"
     deb.touch()
     run = Mock()
@@ -254,3 +286,8 @@ def test_live_layer_requires_installed_base_before_bootstrap(tmp_path, monkeypat
     with pytest.raises(BuildError, match="shared base"):
         build.build(deb, tmp_path / "out", Mode.LIVE)
     run.assert_not_called()
+
+
+def test_rootfs_excludes_external_module_build_dependencies() -> None:
+    for mode in Mode:
+        assert not {"dkms", "build-essential", "libelf-dev"} & set(config.package_list(mode))

@@ -5,6 +5,8 @@ ISO content, boot records and installer validation without using host disks.
 import json
 import shutil
 import subprocess
+from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -22,7 +24,7 @@ from ubuntu_uki_iso.uki.package import create_package
 
 
 @pytest.fixture
-def inputs(tmp_path):
+def inputs(tmp_path: Path) -> FolderLayout:
     layout = FolderLayout(tmp_path)
     for mode, image, uki in (
         (Mode.LIVE, layout.live_layer, layout.live_uki),
@@ -57,7 +59,7 @@ def inputs(tmp_path):
     return layout
 
 
-def payload(layout):
+def payload(layout: FolderLayout) -> Path:
     directory = layout.installed_rootfs.parent
     shutil.copyfile(layout.installed_uki, directory / "uki.efi")
     shutil.copyfile(package_path(layout.root, Mode.INSTALLED), directory / "boot-installed.deb")
@@ -73,12 +75,12 @@ def payload(layout):
     return directory
 
 
-def test_payload_validates_matching_modules_and_cmdline(inputs):
+def test_payload_validates_matching_modules_and_cmdline(inputs: FolderLayout) -> None:
     assert validate_payload(payload(inputs)) == "7.0-test"
 
 
 @pytest.mark.parametrize("name", ["base.squashfs", "uki.efi", "boot-installed.deb"])
-def test_changed_payload_is_rejected(inputs, name):
+def test_changed_payload_is_rejected(inputs: FolderLayout, name: str) -> None:
     directory = payload(inputs)
     with (directory / name).open("ab") as stream:
         stream.write(b"changed")
@@ -86,7 +88,7 @@ def test_changed_payload_is_rejected(inputs, name):
         validate_payload(directory)
 
 
-def test_payload_rejects_package_with_different_uki(inputs):
+def test_payload_rejects_package_with_different_uki(inputs: FolderLayout) -> None:
     directory = payload(inputs)
     different = inputs.root / "different.efi"
     different.write_bytes(
@@ -113,17 +115,17 @@ def test_payload_rejects_package_with_different_uki(inputs):
         validate_payload(directory)
 
 
-def test_rootfs_release_mismatch_is_rejected(inputs):
+def test_rootfs_release_mismatch_is_rejected(inputs: FolderLayout) -> None:
     with pytest.raises(BuildError, match="does not match"):
         media.validate_rootfs(inputs.installed_rootfs, "wrong", Mode.INSTALLED)
 
 
-def test_wrong_boot_mode_is_rejected(inputs):
+def test_wrong_boot_mode_is_rejected(inputs: FolderLayout) -> None:
     with pytest.raises(BuildError, match="command line"):
         media.validate_uki(inputs.live_uki, Mode.INSTALLED)
 
 
-def test_iso_rejects_mismatch_before_replacing_output(inputs):
+def test_iso_rejects_mismatch_before_replacing_output(inputs: FolderLayout) -> None:
     inputs.iso.write_bytes(b"previous")
     inputs.installed_uki.write_bytes(
         make_pe(
@@ -151,14 +153,16 @@ def test_iso_rejects_mismatch_before_replacing_output(inputs):
     any(shutil.which(tool) is None for tool in ("xorriso", "mmd", "mcopy", "mkfs.vfat")),
     reason="ISO tools required",
 )
-def test_real_iso_has_optical_usb_boot_and_exact_payload(inputs):
+def test_real_iso_has_optical_usb_boot_and_exact_payload(inputs: FolderLayout) -> None:
     output = build.build(inputs.root)
     assert output.is_file()
     assert not list(inputs.root.glob("iso-*"))
 
 
-def test_preflight_failure_creates_no_output(tmp_path, monkeypatch):
-    def fail(path):
+def test_preflight_failure_creates_no_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(path: Path) -> None:
         raise BuildError("missing packages")
 
     monkeypatch.setattr(build, "preflight", fail)
@@ -166,7 +170,9 @@ def test_preflight_failure_creates_no_output(tmp_path, monkeypatch):
     assert not (tmp_path / "new").exists()
 
 
-def test_installer_rejects_corrupt_payload_before_disk_commands(inputs, monkeypatch):
+def test_installer_rejects_corrupt_payload_before_disk_commands(
+    inputs: FolderLayout, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from ubuntu_uki_iso.installer.context import Context
     from ubuntu_uki_iso.installer.preflight import RaidMode
     from ubuntu_uki_iso.installer.target import find_payload
@@ -175,7 +181,7 @@ def test_installer_rejects_corrupt_payload_before_disk_commands(inputs, monkeypa
     (directory / "manifest.json").write_text("{}")
     calls = []
 
-    def no_commands(argv, **kwargs):
+    def no_commands(argv: list[Any], **kwargs: Any) -> None:
         calls.append(argv)
         raise AssertionError("invalid payload must be rejected before executing commands")
 
@@ -192,7 +198,9 @@ def test_installer_rejects_corrupt_payload_before_disk_commands(inputs, monkeypa
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_installer_installs_boot_package_in_target_chroot(inputs, monkeypatch, fail):
+def test_installer_installs_boot_package_in_target_chroot(
+    inputs: FolderLayout, monkeypatch: pytest.MonkeyPatch, fail: bool
+) -> None:
     from ubuntu_uki_iso.installer import context, target, uki
     from ubuntu_uki_iso.installer.context import Context
     from ubuntu_uki_iso.installer.preflight import RaidMode
@@ -214,7 +222,7 @@ def test_installer_installs_boot_package_in_target_chroot(inputs, monkeypatch, f
     ctx.dry_run = False
     ctx.confirmed = True
 
-    def run(argv, **kwargs):
+    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         args = [str(arg) for arg in argv]
         if args[0] in ("dpkg-deb", "unsquashfs"):
             return original(argv, **kwargs)
@@ -251,14 +259,16 @@ def test_installer_installs_boot_package_in_target_chroot(inputs, monkeypatch, f
     )
 
 
-def test_rootfs_without_matching_modules_is_rejected(inputs):
+def test_rootfs_without_matching_modules_is_rejected(inputs: FolderLayout) -> None:
     shutil.rmtree(inputs.root / "installed/usr/lib/modules")
     squash(inputs.root / Mode.INSTALLED, inputs.installed_rootfs, 1)
     with pytest.raises(BuildError, match="no runtime modules"):
         media.validate_rootfs(inputs.installed_rootfs, "7.0-test", Mode.INSTALLED)
 
 
-def test_installer_extracts_rootfs_and_writes_target_fstab(inputs, monkeypatch):
+def test_installer_extracts_rootfs_and_writes_target_fstab(
+    inputs: FolderLayout, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from ubuntu_uki_iso.installer import context, target
     from ubuntu_uki_iso.installer.context import Context
     from ubuntu_uki_iso.installer.preflight import RaidMode
@@ -279,7 +289,7 @@ def test_installer_extracts_rootfs_and_writes_target_fstab(inputs, monkeypatch):
     original = subprocess.run
     commands = []
 
-    def run(argv, **kwargs):
+    def run(argv: list[Any], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         args = [str(arg) for arg in argv]
         commands.append(args)
         if args[0] in ("unsquashfs", "dpkg-deb"):
@@ -306,7 +316,7 @@ def test_installer_extracts_rootfs_and_writes_target_fstab(inputs, monkeypatch):
     assert (mount / "etc/kernel/cmdline").read_text() == cmdline(Mode.INSTALLED)
 
 
-def test_iso_rejects_live_layer_from_another_base(inputs):
+def test_iso_rejects_live_layer_from_another_base(inputs: FolderLayout) -> None:
     inputs.iso.write_bytes(b"previous")
     with inputs.installed_rootfs.open("ab") as stream:
         stream.write(b"different base image")

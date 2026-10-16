@@ -142,6 +142,8 @@ class Harness:
             argv += [
                 "-device",
                 "qemu-xhci,id=xhci",
+                "-device",
+                "usb-kbd,bus=xhci.0",
                 "-drive",
                 f"file={self.layout.iso},if=none,id=usbstick,format=raw,readonly=on",
                 "-device",
@@ -296,6 +298,7 @@ class Harness:
                         'test "$(cat /sys/block/nvme0n1/queue/rotational)" = 0',
                         f'for d in $DATA; do test "$(blockdev --getsize64 "$d")" = {VM_DATA_DISK_SIZE}; test "$(cat /sys/block/$(basename "$d")/queue/rotational)" = 1; done',
                         "lsblk -dn -o TRAN | grep -x usb",
+                        "grep -F 'QEMU USB Keyboard' /proc/bus/input/devices",
                         "systemctl is-active NetworkManager",
                         "timeout 120 nm-online -q",
                         "ip -4 route show default | grep default",

@@ -125,8 +125,12 @@ def live_command_line() -> KernelCommandLine:
             "rd.md=0",
             "rd.luks=0",
             "rd.lvm=0",
-            "console=tty0",
+            "rd.shell",
+            "rd.debug",
+            "systemd.show_status=1",
             "console=ttyS0,115200n8",
+            # Keep the physical monitor as /dev/console for local diagnostics.
+            "console=tty0",
         )
     )
 
@@ -201,7 +205,8 @@ def dracut_conf(variant: str) -> DracutConfig:
     if variant == Mode.LIVE:
         return DracutConfig(
             modules=(*modules, "dmsquash-live", "overlayfs"),
-            drivers=(*drivers, "usb_storage", "uas", "overlay"),
+            # USB input is modular in our kernel and must work before switch-root.
+            drivers=(*drivers, "usb_storage", "uas", "overlay", "usbhid", "hid_generic"),
         )
     if variant in (Mode.INSTALLED, "uki-build"):
         return DracutConfig(modules=modules, drivers=drivers)

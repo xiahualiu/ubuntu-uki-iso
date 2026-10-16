@@ -4,6 +4,8 @@ Tests for kernel config overrides and guard entries.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from ubuntu_uki_iso.errors import ConfigError
@@ -109,7 +111,7 @@ def test_the_guard_covers_the_storage_this_machine_uses() -> None:
     assert {"CONFIG_SATA_AHCI", "CONFIG_BLK_DEV_NVME", "CONFIG_MD_RAID0"} <= guarded
 
 
-def test_generated_kernel_config_overrides_are_written_outside_the_package(tmp_path) -> None:
+def test_generated_kernel_config_overrides_are_written_outside_the_package(tmp_path: Path) -> None:
     path = tmp_path / "config.override"
     path.write_text(kconfig.render_config_override(), encoding="utf-8")
     values = validation.parse_config_values(path.read_text())
@@ -130,7 +132,7 @@ def test_kernel_config_rejects_invalid_guard_and_duplicate_config_override_symbo
 
 
 @pytest.mark.parametrize("value", list(kconfig.TristateValue))
-def test_config_entry_renders_tristate_values(value) -> None:
+def test_config_entry_renders_tristate_values(value: kconfig.TristateValue) -> None:
     entry = kconfig.ConfigEntry("CONFIG_TEST", value)
     expected = (
         "# CONFIG_TEST is not set\n"

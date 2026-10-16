@@ -4,12 +4,17 @@ Live layer differences preserve metadata and hide deleted base files.
 
 import os
 import stat
+from pathlib import Path
+
+import pytest
 
 from ubuntu_uki_iso.rootfs.layers import difference
 from ubuntu_uki_iso.uki.layers import HOOK
 
 
-def test_difference_contains_changes_and_whiteouts_without_duplicating_base(tmp_path, monkeypatch):
+def test_difference_contains_changes_and_whiteouts_without_duplicating_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     base, live, layer = (tmp_path / name for name in ("base", "live", "layer"))
     for root in (base, live):
         (root / "etc").mkdir(parents=True)
@@ -22,7 +27,7 @@ def test_difference_contains_changes_and_whiteouts_without_duplicating_base(tmp_
     (live / "etc/new").write_text("installer")
     whiteouts = []
 
-    def mknod(path, mode, device):
+    def mknod(path: Path, mode: int, device: int) -> None:
         whiteouts.append((path.relative_to(layer), mode, device))
         path.touch()
 
@@ -38,7 +43,7 @@ def test_difference_contains_changes_and_whiteouts_without_duplicating_base(tmp_
     assert str(path) == "etc/deleted" and stat.S_ISCHR(mode) and device == os.makedev(0, 0)
 
 
-def test_live_hook_uses_readonly_layers_and_fails_closed():
+def test_live_hook_uses_readonly_layers_and_fails_closed() -> None:
     import subprocess
 
     subprocess.run(["sh", "-n"], input=HOOK, text=True, check=True)
